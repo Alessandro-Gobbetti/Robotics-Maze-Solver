@@ -84,9 +84,10 @@ class ControllerNode(Node):
         self.odom_subscriber = self.create_subscription(Odometry, 'odom', self.odom_callback, 10)
         
 
+        self.initial_rotation = -pi/2
         self.dim = (5,5)
         self.goal = (2,2)
-        self.start = (0, 0)
+        self.start = (4, 0)
         self.flood_matrix = self.create_flood_matrix(self.dim, self.goal)
        
         # the maze array is a 2d array: each entry is a list of neighbors
@@ -96,7 +97,7 @@ class ControllerNode(Node):
 
         
 
-        self.cell_side_length = 0.1 # Defines the length of the side of the cell
+        self.cell_side_length = 0.25 # Defines the length of the side of the cell
         # self.cell_area = self.cell_side_length ** 2
         # self.start_vel = 0.1 # Defines the start velocity of the cell
         # self.maze_side = 5.0 # Defines the length of the side of the maze
@@ -160,6 +161,12 @@ class ControllerNode(Node):
         #     return 
 
     def goto(self, cell_coord):
+
+        # cmd_vel = Twist()
+        # cmd_vel.linear.x = 0.1
+        # cmd_vel.angular.z = 0.0
+        # self.vel_publisher.publish(cmd_vel)
+
         current_odom_pose = self.new_pose
         current_cell_coord = self.current_cell
         target_x = cell_coord[0] - current_cell_coord[0]
@@ -178,6 +185,7 @@ class ControllerNode(Node):
             pass
             # We move up
 
+
     # --------------------------------------------------------------------------------------------
     # Callback functions
 
@@ -185,7 +193,7 @@ class ControllerNode(Node):
         self.proximities[which] = message.range # Updating the dict values with the current proximity value 
     
     def odom_callback(self, msg):
-        # TODO: maybe we should split thise into multiple functions, the odom callback should just update the pose and velocity (and maybe the current cell)
+        # TODO: maybe we should split thise into multiple functions, the odom callback should just update the pose and velocity (and maybe the current cell) ?
         self.odom_pose = msg.pose.pose
         self.odom_valocity = msg.twist.twist
         pose2d = self.pose3d_to_2d(self.odom_pose)
@@ -199,6 +207,7 @@ class ControllerNode(Node):
         current_pose = np.array([self.new_pose[0], self.new_pose[1]])
         prev_pose = np.array([self.prev_cell_odom_pose[0], self.prev_cell_odom_pose[1]])
         if np.abs(np.linalg.norm(current_pose - prev_pose) - self.cell_side_length) > self.distance_tolerance:
+            #FIXME: do not enter if still on the same cell
             # We are in the center of a cell: update values and call step on the floodfill algorithm
             match self.move_dir:
                 case MovingState.LEFT:
@@ -217,6 +226,9 @@ class ControllerNode(Node):
                     self.get_logger().info("No Valid Case Matched.")
 
             self.get_logger().info(f"Current Cell: {self.current_cell}")
+            
+            # FIXME
+            self.current_cell = self.start
             # if self.moved_left:
             #     self.current_cell = (self.current_cell[0] + 1, self.current_cell[1])
             # elif self.moved_right:
@@ -293,13 +305,22 @@ class ControllerNode(Node):
     # wall detection and decision making
     def detect_walls(self):
 
-        walls = WallState((int(self.proximities['left']>0), int(self.proximities['center']>0), int(self.proximities['right']>0), int(self.proximities['left_back']>0 and self.proximities['right_back']>0)))
+        walls_robot = WallState((int(self.proximities['left']>0), int(self.proximities['center']>0), int(self.proximities['right']>0), int(self.proximities['left_back']>0 and self.proximities['right_back']>0)))
+        walls = WallState(self.rotate(walls_robot.value, self.initial_rotation))
         self.wall_state_global = WallState(self.rotate(walls.value, self.new_pose[2]))
         
-        # update the maze matrix with the new wall state
-        self.maze_matrix[self.current_cell[0]][self.current_cell[1]] = [n if not w else None for n, w in zip(self.maze_matrix[self.current_cell[0]][self.current_cell[1]], walls.value)]
+        old_neighbors = self.maze_matrix[self.current_cell[0]][self.current_cell[1]]
+        new_neighbors = [n if not w else None for n, w in zip(self.maze_matrix[self.current_cell[0]][self.current_cell[1]], walls.value)]
+        # remove current cell as neighbor for all the removed neighbors
+        for i, n in enumerate(old_neighbors):
+            if n is not None and new_neighbors[i] is None:
+                self.maze_matrix[n[0]][n[1]] = [x if x != self.current_cell else None for x in self.maze_matrix[n[0]][n[1]]]
+
+        self.maze_matrix[self.current_cell[0]][self.current_cell[1]] = new_neighbors
         
-        self.get_logger().info(f"Wall state: {self.wall_state_global}")
+        self.print_maze()
+        
+        self.get_logger().info(f"Walls : {walls_robot.value},\nRotated Walls: {walls.value}, \nGlobal Wall State: {self.wall_state_global.value}")
 
 
     def rotate(self, vec, angle_pi):
@@ -380,9 +401,7 @@ class ControllerNode(Node):
         self.next_cell = smallest_neighbor
         self.explored.append(self.current_cell)
 
-        self.print_maze()
-        
-
+        # self.print_maze()
 
         return smallest_neighbor
 
@@ -434,26 +453,39 @@ class ControllerNode(Node):
         """
         This function prints the maze with the flood array values. The maze is based on the current knowledge of the robot: the walls that it has detected.
         """
-        #FIXME: use the logger instead of print
+
+        msg = "Current knowledge of the maze:\n"
 
         for i in range(self.maze_matrix.shape[0]):
-            print("\033[4m" + " "*4 if (i, 0) not in self.maze_matrix[i][0] else " "*4, end="")
-        print("\033[0m")
+            msg += "\033[4m" + " "*4 if (i, 0) not in self.maze_matrix[i][0] else " "*4
+        msg += "\033[0m" + "\n"
+        
         for i in range(self.maze_matrix.shape[0]):
             for j in range(self.maze_matrix.shape[1]):
                 neighbors = self.maze_matrix[i][j]
                 # print underlined if there is bottom wall
-                print("\033[4m" if (i + 1, j) not in neighbors else "", end="")
+                msg += "\033[4m" if (i + 1, j) not in neighbors else ""
+                
+                # print("\033[4m" if (i + 1, j) not in neighbors else "", end="")
                 # print left wall
-                print("│" if (i, j - 1) not in neighbors else " ", end="")
+                msg += "│" if (i, j - 1) not in neighbors else " "
+                # print("│" if (i, j - 1) not in neighbors else " ", end="")
                 # print value
-                print("\033[91m" if (i, j) == self.start else "\033[92m" if (i, j) == self.goal else "\033[94m" if (i, j) in self.explored else "", end="")
-                print("{:<2}".format(self.flood_matrix[i][j]), end="")
-                print("\033[0m" if (i, j) == self.start or (i, j) == self.goal or (i, j) in self.explored else "", end="")
+                msg += "\033[91m" if (i, j) == self.start else "\033[92m" if (i, j) == self.goal else "\033[94m" if (i, j) in self.explored else ""
+                msg += "{:<2}".format(self.flood_matrix[i][j])
+                msg += "\033[0m" if (i, j) == self.start or (i, j) == self.goal or (i, j) in self.explored else ""
+                # print("\033[91m" if (i, j) == self.start else "\033[92m" if (i, j) == self.goal else "\033[94m" if (i, j) in self.explored else "", end="")
+                # print("{:<2}".format(self.flood_matrix[i][j]), end="")
+                # print("\033[0m" if (i, j) == self.start or (i, j) == self.goal or (i, j) in self.explored else "", end="")
                 #print right wall
-                print("│" if (i, j + 1) not in neighbors else " ", end="")
-                print("\033[0m", end="")
-            print()
+                msg += "│" if (i, j + 1) not in neighbors else " "
+                msg += "\033[0m"
+                # print("│" if (i, j + 1) not in neighbors else " ", end="")
+                # print("\033[0m", end="")
+            # print()
+            msg += "\n"
+    
+        self.get_logger().info(msg)
 
 
 
