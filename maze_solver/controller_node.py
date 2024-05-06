@@ -9,7 +9,7 @@ import sys
 from geometry_msgs.msg import Twist, Pose
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Range, LaserScan, Imu
-from math import pi
+from math import pi, sqrt, atan2, sin, cos, atan
 
 
 class WallState(Enum):
@@ -84,19 +84,20 @@ class ControllerNode(Node):
         self.odom_subscriber = self.create_subscription(Odometry, 'odom', self.odom_callback, 10)
         
 
-        self.initial_rotation = -pi/2
+        self.initial_rotation = pi
         self.dim = (5,5)
         self.goal = (2,2)
-        self.start = (4, 0)
+        self.start = (0, 0)
         self.flood_matrix = self.create_flood_matrix(self.dim, self.goal)
        
         # the maze array is a 2d array: each entry is a list of neighbors
         self.maze_matrix = self.create_maze_matrix(self.dim)
         
-
-
         
-
+        self.READY = False
+        self.is_stopped = False
+        
+        
         self.cell_side_length = 0.25 # Defines the length of the side of the cell
         # self.cell_area = self.cell_side_length ** 2
         # self.start_vel = 0.1 # Defines the start velocity of the cell
@@ -106,7 +107,7 @@ class ControllerNode(Node):
         # self.maze_matrix = np.zeros((self.num_cells, self.num_cells)) # Creates the matrix by dividing the maze into cells that are defined as above. The elements denote how far we are from the goal.
         # self.start_cell = (0,0) # We start in the middle of the cell
         # self.dist_from_start = 0.0 # Defines how many cells away we are from the starting cell
-        self.distance_tolerance = 0.001
+        self.distance_tolerance = 0.002
         self.current_cell = (0,0)
         self.move_dir = MovingState.DOWN
         self.proximities = {
@@ -142,7 +143,7 @@ class ControllerNode(Node):
 
     def update_callback(self):
 
-        if self.next_cell:
+        if self.next_cell and self.READY:
             self.goto(self.next_cell)
 
 
@@ -160,36 +161,116 @@ class ControllerNode(Node):
         # elif self.mode == ThymioState.DONE:
         #     return 
 
-    def goto(self, cell_coord):
+    def goto(self, cell_pose):
+
+        if self.is_stopped:
+            # wait for one second
+            if self.get_clock().now().seconds_nanoseconds()[0] - self.is_stopped.seconds_nanoseconds()[0] < 1:
+                self.stop()
+                return
+            else:
+                self.is_stopped = False
 
         # cmd_vel = Twist()
         # cmd_vel.linear.x = 0.1
         # cmd_vel.angular.z = 0.0
         # self.vel_publisher.publish(cmd_vel)
 
-        current_odom_pose = self.new_pose
-        current_cell_coord = self.current_cell
-        target_x = cell_coord[0] - current_cell_coord[0]
-        target_y = cell_coord[1] - current_cell_coord[1]
+        # current_odom_pose = self.new_pose
+        # current_cell_coord = self.current_cell
+        # target_x = cell_coord[0] - current_cell_coord[0]
+        # target_y = cell_coord[1] - current_cell_coord[1]
 
-        if target_x > 0:
-            # We move to the left
-            pass
-        elif target_x < 0:
-            # We move to the right
-            pass
-        elif target_y > 0:
-            # We move down
-            pass
-        else:
-            pass
-            # We move up
+        # # self.prev_cell_odom_pose
+        # self.current_cell
+        # cell_coords: self.next_cell
 
+        # curr_pose, cell_coords -> cell_pose:
+
+
+
+
+
+        # match self.move_dir:
+        #     case MovingState.LEFT:
+        #         if not self.rotated:
+        #             self.turn_ninety_left(self.prev_cell_odom_pose[2], self.new_pose[2])
+        #         else:
+        #             self.move_forward_to(target_x, target_y)
+        #     case MovingState.RIGHT:
+        #         if not self.rotated:
+        #             self.turn_ninety_right(self.prev_cell_odom_pose[2], self.new_pose[2])
+        
+        # if target_x > 0:
+        #     # We move to the left
+        #     if not self.rotated:
+
+        #     pass
+        # elif target_x < 0:
+        #     # We move to the right
+        #     pass
+        # elif target_y > 0:
+        #     # We move down
+        #     if not self.up_move:
+
+        #     pass
+        # else:
+        #     pass
+        #     # We move up
+        
+        cmd_vel = Twist()
+        cmd_vel.linear.x = self.vel 
+        cmd_vel.angular.z = self.ang
+        self.vel_publisher.publish(cmd_vel)
+
+
+    def euclidean_distance(self, goal_pose, current_pose):
+        """Euclidean distance between current pose and the goal."""
+        return sqrt(pow((goal_pose.x - current_pose.x), 2) +
+                    pow((goal_pose.y - current_pose.y), 2))
+
+    def angular_difference(self, goal_theta, current_theta):
+        """Compute shortest rotation from orientation current_theta to orientation goal_theta"""
+        return atan2(sin(goal_theta - current_theta), cos(goal_theta - current_theta))
+
+    def linear_vel(self, goal_pose, current_pose, constant=1.5):
+        """See video: https://www.youtube.com/watch?v=Qh15Nol5htM."""
+        return constant * self.euclidean_distance(goal_pose, current_pose)
+
+    def steering_angle(self, goal_pose, current_pose):
+        """See video: https://www.youtube.com/watch?v=Qh15Nol5htM."""
+        return atan2(goal_pose.y - current_pose.y, goal_pose.x - current_pose.x)
+
+    def angular_vel(self, goal_pose, current_pose, constant=6):
+        """See video: https://www.youtube.com/watch?v=Qh15Nol5htM."""
+        goal_theta = self.steering_angle(goal_pose, current_pose)
+        return constant * self.angular_difference(goal_theta, current_pose.theta)
+
+
+    def turn_ninety_right(self, theta, current_angle, th=0.01):
+        ta = np.pi/2
+        tar_rot = (theta - ta + 2*np.pi)%2*np.pi
+        self.get_logger().info(f"The target {self.cur_rot}, current_angle = {theta}")
+        if np.abs(tar_rot - current_angle) < th:
+            self.rotated = True
+            self.ang = 0.0
+        
+        
+    def turn_ninety_left(self, theta, current_angle, th=0.01):
+        ta = np.pi/2
+        tar_rot = (theta + ta)%2*np.pi
+        # if self.cur_rot is None:
+        #     self.cur_rot = (theta + ta)%2*np.pi
+        self.get_logger().info(f"The target {self.cur_rot}, ca = {theta}")
+        if np.abs(tar_rot - current_angle) < th:
+            self.rotated = True
+            self.ang = 0.0
 
     # --------------------------------------------------------------------------------------------
     # Callback functions
 
     def proximity_callback(self, message, which):
+        self.READY = True
         self.proximities[which] = message.range # Updating the dict values with the current proximity value 
     
     def odom_callback(self, msg):
@@ -197,38 +278,81 @@ class ControllerNode(Node):
         self.odom_pose = msg.pose.pose
         self.odom_valocity = msg.twist.twist
         pose2d = self.pose3d_to_2d(self.odom_pose)
-        self.get_logger().info(f"Got Pose {pose2d}")
+        # self.get_logger().info(f"Got Pose {pose2d}")
         self.new_pose = (pose2d[0], pose2d[1], pose2d[2])
+
+        if not self.READY:
+            return
+        
+        is_start = False
         if self.start_pose is None:
+            is_start = True
             self.start_pose = (pose2d[0], pose2d[1], pose2d[2])
             self.prev_cell_odom_pose = (pose2d[0], pose2d[1], pose2d[2])
             # self.maze_matrix[self.start_cell] = self.dist_from_start
         
         current_pose = np.array([self.new_pose[0], self.new_pose[1]])
         prev_pose = np.array([self.prev_cell_odom_pose[0], self.prev_cell_odom_pose[1]])
-        if np.abs(np.linalg.norm(current_pose - prev_pose) - self.cell_side_length) > self.distance_tolerance:
+
+        # self.get_logger().info(f"Current Pose: {current_pose}, Prev Pose: {prev_pose}, Distance: {np.linalg.norm(current_pose - prev_pose)}, ||||||||| {np.abs(np.linalg.norm(current_pose - prev_pose) - self.cell_side_length)}")
+
+        if is_start or np.abs(np.linalg.norm(current_pose - prev_pose) - self.cell_side_length) < self.distance_tolerance:
+            self.get_logger().info("------------ WE ARE IN THE CENTER OF A CELL ------------")
             #FIXME: do not enter if still on the same cell
             # We are in the center of a cell: update values and call step on the floodfill algorithm
-            match self.move_dir:
-                case MovingState.LEFT:
-                    self.current_cell = (self.current_cell[0] + 1, self.current_cell[1])
-                    
-                case MovingState.RIGHT:
-                    self.current_cell = (self.current_cell[0]-1, self.current_cell[1])
-                    
-                case MovingState.UP:
-                    self.current_cell = (self.current_cell[0], self.current_cell[1] - 1)
-                    
-                case MovingState.DOWN:
-                    self.current_cell = (self.current_cell[0], self.current_cell[1] + 1)
 
-                case _:
-                    self.get_logger().info("No Valid Case Matched.")
+            # save time
+            self.is_stopped = self.get_clock().now()
+            
 
-            self.get_logger().info(f"Current Cell: {self.current_cell}")
+            
+            if not is_start:
+                orientation = pose2d[2] + self.initial_rotation
+                if orientation > pi:
+                    orientation -= 2*pi
+                elif orientation < -pi:
+                    orientation += 2*pi
+
+                # -pi to pi
+                dir = round(orientation / (pi/2)) # -2, -1, 0, 1, 2
+
+                
+                if dir == -2 or dir == 2:
+                    self.move_dir = MovingState.DOWN
+                elif dir == -1:
+                    self.move_dir = MovingState.RIGHT
+                elif dir == 0:
+                    self.move_dir = MovingState.UP
+                elif dir == 1:
+                    self.move_dir = MovingState.LEFT
+
+                self.get_logger().info(f"Orientation: {orientation}, Direction: {dir}, Move Direction: {self.move_dir}")
+
+
+                match self.move_dir:
+                    case MovingState.LEFT:
+                        self.current_cell = (self.current_cell[0], self.current_cell[1]-1)
+                        self.vel = 0.0
+                        self.ang = 0.1
+                    case MovingState.RIGHT:
+                        self.current_cell = (self.current_cell[0], self.current_cell[1]+1)
+                        self.vel = 0.0
+                        self.ang = -0.1
+                    case MovingState.UP:
+                        self.current_cell = (self.current_cell[0]-1, self.current_cell[1])
+                        self.vel = 0.1
+                        self.ang = 0.0
+                    case MovingState.DOWN:
+                        self.current_cell = (self.current_cell[0]+1, self.current_cell[1])
+                        self.vel = 0.1
+                        self.ang = 0.0
+                    case _:
+                        self.get_logger().info("No Valid Case Matched.")
+
+                self.get_logger().info(f"Current Cell: {self.current_cell}")
             
             # FIXME
-            self.current_cell = self.start
+            # self.current_cell = self.start
             # if self.moved_left:
             #     self.current_cell = (self.current_cell[0] + 1, self.current_cell[1])
             # elif self.moved_right:
@@ -320,7 +444,7 @@ class ControllerNode(Node):
         
         self.print_maze()
         
-        self.get_logger().info(f"Walls : {walls_robot.value},\nRotated Walls: {walls.value}, \nGlobal Wall State: {self.wall_state_global.value}")
+        self.get_logger().info(f"\n -----------\n cell: {self.current_cell}\n  Walls : {walls_robot.value},\nRotated Walls: {walls.value}, \nGlobal Wall State: {self.wall_state_global.value} \n -----------")
 
 
     def rotate(self, vec, angle_pi):
@@ -353,7 +477,7 @@ class ControllerNode(Node):
         return maze_mat
 
     def get_min_neighbors(self, neighbors, flood_array):
-        print("neighbors: ", neighbors)
+        # print("neighbors: ", neighbors)
         min_value = min([flood_array[n[0]][n[1]] for n in neighbors if n])
         return [n for n in neighbors if n and flood_array[n[0]][n[1]] == min_value], min_value
 
@@ -378,13 +502,16 @@ class ControllerNode(Node):
                 el = queue.popleft()
                 el_neighbors = self.maze_matrix[el[0]][el[1]]
                 print("el: ", el, el_neighbors)
-                el_smallest_neighbor = min(el_neighbors, key=lambda x: self.flood_matrix[x[0]][x[1]])
+                # el_smallest_neighbor, el_smallest_neighbor_value = self.get_min_neighbors(el_neighbors, self.flood_matrix)
+                el_smallest_neighbor = min(self.flood_matrix[el[0]][el[1]] for el in el_neighbors if el is not None)
                 el_smallest_neighbor_value = self.flood_matrix[el_smallest_neighbor[0]][el_smallest_neighbor[1]]
                 # if el smaller than smallest neighbor
                 if self.flood_matrix[el[0]][el[1]] <= el_smallest_neighbor_value:
                     self.flood_matrix[el[0]][el[1]] = el_smallest_neighbor_value + 1
                     for n in el_neighbors:
-                        queue.append(n)
+                        if n is not None and n not in queue:
+                            queue.append(n)
+                            print("adding: ", n, "to queue: ", queue)
             
             # recompute the smallest neighbors
             smallest_neighbors, smallest_neighbor_value = self.get_min_neighbors(neighbors, self.flood_matrix)
