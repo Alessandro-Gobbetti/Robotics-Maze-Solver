@@ -266,6 +266,45 @@ class ControllerNode(Node):
             self.rotated = True
             self.ang = 0.0
 
+   
+
+    def get_cell_from_pose(self, pose2d):
+        """
+        This function maps the odometry pose to the cell coordinates.
+        """
+        # (0,0) should be the start cell
+        # consider the rotation of the robot + the initial rotation
+
+
+        x = (pose2d[0] / self.cell_side_length) + self.start[0]
+        y = (pose2d[1] / self.cell_side_length) + self.start[1]
+
+        orientation = pose2d[2] + self.initial_rotation - pi
+        if orientation > pi:
+            orientation -= 2*pi
+        elif orientation < -pi:
+            orientation += 2*pi
+
+        # rotate the 2d coordinates
+        np.array([x, y])
+        # rotate the coordinates
+        x = x * cos(orientation) - y * sin(orientation)
+        y = x * sin(orientation) + y * cos(orientation)
+
+        # return the rounded coordinates + rounding error
+        cell = (round(x), round(y))
+        error = ((x - cell[0]) * self.cell_side_length, (y - cell[1]) * self.cell_side_length) 
+        euclidean_error = sqrt(error[0]**2 + error[1]**2)
+        return cell, euclidean_error
+
+    def get_pose_from_cell(self, cell):
+        """
+        This function maps the cell coordinates to the odometry pose.
+        """
+        x = cell[0] * self.cell_side_length
+        y = cell[1] * self.cell_side_length
+        return (x, y)
+        
     # --------------------------------------------------------------------------------------------
     # Callback functions
 
