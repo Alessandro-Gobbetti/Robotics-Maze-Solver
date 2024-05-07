@@ -171,10 +171,10 @@ class ControllerNode(Node):
             else:
                 self.is_stopped = False
 
-        # cmd_vel = Twist()
-        # cmd_vel.linear.x = 0.1
-        # cmd_vel.angular.z = 0.0
-        # self.vel_publisher.publish(cmd_vel)
+        cmd_vel = Twist()
+        cmd_vel.linear.x = 0.1
+        cmd_vel.angular.z = 0.0
+        self.vel_publisher.publish(cmd_vel)
 
         # current_odom_pose = self.new_pose
         # current_cell_coord = self.current_cell
@@ -218,10 +218,10 @@ class ControllerNode(Node):
         #     pass
         #     # We move up
         
-        cmd_vel = Twist()
-        cmd_vel.linear.x = self.vel 
-        cmd_vel.angular.z = self.ang
-        self.vel_publisher.publish(cmd_vel)
+        # cmd_vel = Twist()
+        # cmd_vel.linear.x = self.vel 
+        # cmd_vel.angular.z = self.ang
+        # self.vel_publisher.publish(cmd_vel)
 
 
     def euclidean_distance(self, goal_pose, current_pose):
@@ -268,28 +268,42 @@ class ControllerNode(Node):
 
    
 
-    def get_cell_from_pose(self, pose2d):
+    def get_cell_from_pose(self, pose2d: tuple):
         """
-        This function maps the odometry pose to the cell coordinates.
-        """
-        # (0,0) should be the start cell
-        # consider the rotation of the robot + the initial rotation
+        This function converts a given 2D pose in the odometry frame to cell coordinates in the maze matrix.
+        It also computes the error in this conversion. If the error is 0.0, it means the robot is exactly at the center of the cell.
+        The conversion depends on the initial rotation of the robot.
 
+        Parameters
+        ----------
+        pose2d (tuple): A tuple (x, y) representing the 2D pose in the odometry frame.
+
+        Returns
+        -------
+        cell (tuple): A tuple (x, y) representing the cell coordinates in the grid map.
+        euclidean_error (float): The Euclidean distance between the actual pose and the center of the cell.
+        """
 
         x = (pose2d[0] / self.cell_side_length) + self.start[0]
         y = (pose2d[1] / self.cell_side_length) + self.start[1]
 
-        orientation = pose2d[2] + self.initial_rotation - pi
-        if orientation > pi:
-            orientation -= 2*pi
-        elif orientation < -pi:
-            orientation += 2*pi
+        dir = round(self.initial_rotation / (pi/2)) # -2, -1, 0, 1, 2
+        # if dir == -2 or dir == 2:
+        #     x = x
+        #     y = y
+        # elif dir == -1:
+        #     x = x
+        #     y = y
+        if dir == 0: # moving up, inverted x
+            x = -x
+            # y = y
+        elif dir == 1: 
+            # x = x
+            y = -y
 
         # rotate the 2d coordinates
-        np.array([x, y])
-        # rotate the coordinates
-        x = x * cos(orientation) - y * sin(orientation)
-        y = x * sin(orientation) + y * cos(orientation)
+        # x = x * cos(orientation) - y * sin(orientation)
+        # y = x * sin(orientation) + y * cos(orientation)
 
         # return the rounded coordinates + rounding error
         cell = (round(x), round(y))
@@ -299,10 +313,23 @@ class ControllerNode(Node):
 
     def get_pose_from_cell(self, cell):
         """
-        This function maps the cell coordinates to the odometry pose.
+        Converts a given cell coordinate in the maze matrix to a 2D pose in the odometry frame.
+
+        Parameters
+        ----------
+        cell (tuple): A tuple (x, y) representing the cell coordinates in the maze matrix.
+
+        Returns
+        -------
+        pose2d (tuple): A tuple (x, y) representing the 2D pose in the odometry frame.
         """
         x = cell[0] * self.cell_side_length
         y = cell[1] * self.cell_side_length
+        dir = round(self.initial_rotation / (pi/2)) # -2, -1, 0, 1, 2
+        if dir == 0:
+            x = -x
+        elif dir == 1:
+            y = -y
         return (x, y)
         
     # --------------------------------------------------------------------------------------------
@@ -336,7 +363,7 @@ class ControllerNode(Node):
         # self.get_logger().info(f"Current Pose: {current_pose}, Prev Pose: {prev_pose}, Distance: {np.linalg.norm(current_pose - prev_pose)}, ||||||||| {np.abs(np.linalg.norm(current_pose - prev_pose) - self.cell_side_length)}")
 
         if is_start or np.abs(np.linalg.norm(current_pose - prev_pose) - self.cell_side_length) < self.distance_tolerance:
-            self.get_logger().info("------------ WE ARE IN THE CENTER OF A CELL ------------")
+            self.get_logger().info(f"------------ WE ARE IN THE CENTER OF A CELL ------------, {current_pose}")
             #FIXME: do not enter if still on the same cell
             # We are in the center of a cell: update values and call step on the floodfill algorithm
 
@@ -371,20 +398,20 @@ class ControllerNode(Node):
                 match self.move_dir:
                     case MovingState.LEFT:
                         self.current_cell = (self.current_cell[0], self.current_cell[1]-1)
-                        self.vel = 0.0
-                        self.ang = 0.1
+                        # self.vel = 0.0
+                        # self.ang = 0.1
                     case MovingState.RIGHT:
                         self.current_cell = (self.current_cell[0], self.current_cell[1]+1)
-                        self.vel = 0.0
-                        self.ang = -0.1
+                        # self.vel = 0.0
+                        # self.ang = -0.1
                     case MovingState.UP:
                         self.current_cell = (self.current_cell[0]-1, self.current_cell[1])
-                        self.vel = 0.1
-                        self.ang = 0.0
+                        # self.vel = 0.1
+                        # self.ang = 0.0
                     case MovingState.DOWN:
                         self.current_cell = (self.current_cell[0]+1, self.current_cell[1])
-                        self.vel = 0.1
-                        self.ang = 0.0
+                        # self.vel = 0.1
+                        # self.ang = 0.0
                     case _:
                         self.get_logger().info("No Valid Case Matched.")
 
