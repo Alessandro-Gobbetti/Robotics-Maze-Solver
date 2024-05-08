@@ -61,7 +61,8 @@ class ControllerNode(Node):
         self.pose2d = None
         self.prev_cell_odom_pose = None
         self.start_pose = None
-        self.new_pose = None
+        self.current_pose = None
+        # self.new_pose = None
         # self.wall_state_robot = None
         self.wall_state_global = None
 
@@ -71,7 +72,8 @@ class ControllerNode(Node):
         self.best_paths = []
         self.best_path = None
         self.next_cell = None
-        
+        self.rotating = False
+        self.going_to_next_cell = False
         # Create attributes to store odometry pose and velocity
         self.odom_pose = None
         self.odom_velocity = None
@@ -97,7 +99,7 @@ class ControllerNode(Node):
         self.READY = False
         self.is_stopped = False
         
-        
+        self.angular_threshold = 0.01 # Defines the threshold for the differ
         self.cell_side_length = 0.25 # Defines the length of the side of the cell
         # self.cell_area = self.cell_side_length ** 2
         # self.start_vel = 0.1 # Defines the start velocity of the cell
@@ -107,7 +109,7 @@ class ControllerNode(Node):
         # self.maze_matrix = np.zeros((self.num_cells, self.num_cells)) # Creates the matrix by dividing the maze into cells that are defined as above. The elements denote how far we are from the goal.
         # self.start_cell = (0,0) # We start in the middle of the cell
         # self.dist_from_start = 0.0 # Defines how many cells away we are from the starting cell
-        self.distance_tolerance = 0.002
+        self.distance_tolerance = 0.01
         self.current_cell = (0,0)
         self.move_dir = MovingState.DOWN
         self.proximities = {
@@ -144,90 +146,58 @@ class ControllerNode(Node):
     def update_callback(self):
 
         if self.next_cell and self.READY:
-            self.goto(self.next_cell)
+            self.goto(self.get_pose_from_cell(self.next_cell))
+
+       
+
+    def move_to_pose(self, goal_pose, current_pose):
+        if self.euclidean_distance(goal_pose, current_pose) >= self.distance_tolerance:
+            # We still haven't reached the goal pose. Use a proportional controller to compute velocities
+            # that will move the turtle towards the goal (https://en.wikipedia.org/wiki/Proportional_control)
+        
+            # Twist represents 3D linear and angular velocities, in turtlesim we only care about 2 dimensions:
+            # linear velocity along the x-axis (forward) and angular velocity along the z-axis (yaw angle)
+            cmd_vel = Twist() 
+            cmd_vel.linear.x = self.linear_vel(goal_pose, current_pose, constant=0.8)
+            cmd_vel.angular.z = self.angular_vel(goal_pose, current_pose)
+            
+            # Publish the command
+            self.vel_publisher.publish(cmd_vel)
+        else:
+            self.get_logger().info("Goal reached, shutting down...")
+            self.is_stopped = self.get_clock().now()
+            self.stop()
 
 
-        # if self.mode == ThymioState.DETECT:
-        #     self.update_detect()
-        # elif self.mode == ThymioState.DECIDE:
-        #     self.update_decide()
-        # elif self.mode == ThymioState.WALK:
-        # # Let's just set some hard-coded velocities in this example
-        #     cmd_vel = Twist() 
-        #     cmd_vel.linear.x  = 0.2 # [m/s]
-        #     cmd_vel.angular.z = 0.0 # [rad/s]
-        #     # Publish the command
-        #     self.vel_publisher.publish(cmd_vel)
-        # elif self.mode == ThymioState.DONE:
-        #     return 
-
-    def goto(self, cell_pose):
-
-        if self.is_stopped:
-            # wait for one second
-            if self.get_clock().now().seconds_nanoseconds()[0] - self.is_stopped.seconds_nanoseconds()[0] < 1:
-                self.stop()
-                return
-            else:
-                self.is_stopped = False
-
+    def rotate_in_place(self, goal_pose, current_pose):
         cmd_vel = Twist()
-        cmd_vel.linear.x = 0.1
-        cmd_vel.angular.z = 0.0
+        cmd_vel.angular.z = self.angular_vel(goal_pose, current_pose)
+        cmd_vel.linear.x = 0.0
         self.vel_publisher.publish(cmd_vel)
 
-        # current_odom_pose = self.new_pose
-        # current_cell_coord = self.current_cell
-        # target_x = cell_coord[0] - current_cell_coord[0]
-        # target_y = cell_coord[1] - current_cell_coord[1]
+    def goto(self, goal_pose):
 
-        # # self.prev_cell_odom_pose
-        # self.current_cell
-        # cell_coords: self.next_cell
-
-        # curr_pose, cell_coords -> cell_pose:
-
+        # if self.is_stopped:
+        #     # wait for one second
+        #     if self.get_clock().now().seconds_nanoseconds()[0] - self.is_stopped.seconds_nanoseconds()[0] < 1:
+        #         self.stop()
+        #         return
+        #     else:
+        #         self.is_stopped = False
 
 
-
-
-        # match self.move_dir:
-        #     case MovingState.LEFT:
-        #         if not self.rotated:
-        #             self.turn_ninety_left(self.prev_cell_odom_pose[2], self.new_pose[2])
-        #         else:
-        #             self.move_forward_to(target_x, target_y)
-        #     case MovingState.RIGHT:
-        #         if not self.rotated:
-        #             self.turn_ninety_right(self.prev_cell_odom_pose[2], self.new_pose[2])
+        goal_theta = self.steering_angle(goal_pose, self.current_pose)
+        if goal_theta >= self.angular_threshold: # Checks if there is a difference in the theta for the goal pose and the current pose (if we need to turn)
+            self.rotate_in_place(goal_pose, self.current_pose)
+        else:
+            self.move_to_pose(goal_pose, self.current_pose) # We do not need to turn anymore and therefore we can go straight
         
-        # if target_x > 0:
-        #     # We move to the left
-        #     if not self.rotated:
-
-        #     pass
-        # elif target_x < 0:
-        #     # We move to the right
-        #     pass
-        # elif target_y > 0:
-        #     # We move down
-        #     if not self.up_move:
-
-        #     pass
-        # else:
-        #     pass
-        #     # We move up
-        
-        # cmd_vel = Twist()
-        # cmd_vel.linear.x = self.vel 
-        # cmd_vel.angular.z = self.ang
-        # self.vel_publisher.publish(cmd_vel)
 
 
     def euclidean_distance(self, goal_pose, current_pose):
         """Euclidean distance between current pose and the goal."""
-        return sqrt(pow((goal_pose.x - current_pose.x), 2) +
-                    pow((goal_pose.y - current_pose.y), 2))
+        return sqrt(pow((goal_pose[0] - current_pose[0]), 2) +
+                    pow((goal_pose[1] - current_pose[1]), 2))
 
     def angular_difference(self, goal_theta, current_theta):
         """Compute shortest rotation from orientation current_theta to orientation goal_theta"""
@@ -239,32 +209,12 @@ class ControllerNode(Node):
 
     def steering_angle(self, goal_pose, current_pose):
         """See video: https://www.youtube.com/watch?v=Qh15Nol5htM."""
-        return atan2(goal_pose.y - current_pose.y, goal_pose.x - current_pose.x)
+        return atan2(goal_pose[1] - current_pose[1], goal_pose[0] - current_pose[0])
 
     def angular_vel(self, goal_pose, current_pose, constant=6):
         """See video: https://www.youtube.com/watch?v=Qh15Nol5htM."""
         goal_theta = self.steering_angle(goal_pose, current_pose)
-        return constant * self.angular_difference(goal_theta, current_pose.theta)
-
-
-    def turn_ninety_right(self, theta, current_angle, th=0.01):
-        ta = np.pi/2
-        tar_rot = (theta - ta + 2*np.pi)%2*np.pi
-        self.get_logger().info(f"The target {self.cur_rot}, current_angle = {theta}")
-        if np.abs(tar_rot - current_angle) < th:
-            self.rotated = True
-            self.ang = 0.0
-        
-        
-    def turn_ninety_left(self, theta, current_angle, th=0.01):
-        ta = np.pi/2
-        tar_rot = (theta + ta)%2*np.pi
-        # if self.cur_rot is None:
-        #     self.cur_rot = (theta + ta)%2*np.pi
-        self.get_logger().info(f"The target {self.cur_rot}, ca = {theta}")
-        if np.abs(tar_rot - current_angle) < th:
-            self.rotated = True
-            self.ang = 0.0
+        return constant * self.angular_difference(goal_theta, current_pose[2])
 
    
 
@@ -311,7 +261,7 @@ class ControllerNode(Node):
         euclidean_error = sqrt(error[0]**2 + error[1]**2)
         return cell, euclidean_error
 
-    def get_pose_from_cell(self, cell):
+    def get_pose_from_cell(self, cell: tuple):
         """
         Converts a given cell coordinate in the maze matrix to a 2D pose in the odometry frame.
 
@@ -340,12 +290,12 @@ class ControllerNode(Node):
         self.proximities[which] = message.range # Updating the dict values with the current proximity value 
     
     def odom_callback(self, msg):
-        # TODO: maybe we should split thise into multiple functions, the odom callback should just update the pose and velocity (and maybe the current cell) ?
         self.odom_pose = msg.pose.pose
         self.odom_valocity = msg.twist.twist
         pose2d = self.pose3d_to_2d(self.odom_pose)
         # self.get_logger().info(f"Got Pose {pose2d}")
-        self.new_pose = (pose2d[0], pose2d[1], pose2d[2])
+        self.current_pose = (pose2d[0], pose2d[1], pose2d[2])
+
 
         if not self.READY:
             return
@@ -354,150 +304,74 @@ class ControllerNode(Node):
         if self.start_pose is None:
             is_start = True
             self.start_pose = (pose2d[0], pose2d[1], pose2d[2])
-            self.prev_cell_odom_pose = (pose2d[0], pose2d[1], pose2d[2])
-            # self.maze_matrix[self.start_cell] = self.dist_from_start
-        
-        current_pose = np.array([self.new_pose[0], self.new_pose[1]])
-        prev_pose = np.array([self.prev_cell_odom_pose[0], self.prev_cell_odom_pose[1]])
 
-        # self.get_logger().info(f"Current Pose: {current_pose}, Prev Pose: {prev_pose}, Distance: {np.linalg.norm(current_pose - prev_pose)}, ||||||||| {np.abs(np.linalg.norm(current_pose - prev_pose) - self.cell_side_length)}")
-
-        if is_start or np.abs(np.linalg.norm(current_pose - prev_pose) - self.cell_side_length) < self.distance_tolerance:
-            self.get_logger().info(f"------------ WE ARE IN THE CENTER OF A CELL ------------, {current_pose}")
-            #FIXME: do not enter if still on the same cell
-            # We are in the center of a cell: update values and call step on the floodfill algorithm
-
-            # save time
-            self.is_stopped = self.get_clock().now()
-            
-
-            
-            if not is_start:
-                orientation = pose2d[2] + self.initial_rotation
-                if orientation > pi:
-                    orientation -= 2*pi
-                elif orientation < -pi:
-                    orientation += 2*pi
-
-                # -pi to pi
-                dir = round(orientation / (pi/2)) # -2, -1, 0, 1, 2
-
-                
-                if dir == -2 or dir == 2:
-                    self.move_dir = MovingState.DOWN
-                elif dir == -1:
-                    self.move_dir = MovingState.RIGHT
-                elif dir == 0:
-                    self.move_dir = MovingState.UP
-                elif dir == 1:
-                    self.move_dir = MovingState.LEFT
-
-                self.get_logger().info(f"Orientation: {orientation}, Direction: {dir}, Move Direction: {self.move_dir}")
-
-
-                match self.move_dir:
-                    case MovingState.LEFT:
-                        self.current_cell = (self.current_cell[0], self.current_cell[1]-1)
-                        # self.vel = 0.0
-                        # self.ang = 0.1
-                    case MovingState.RIGHT:
-                        self.current_cell = (self.current_cell[0], self.current_cell[1]+1)
-                        # self.vel = 0.0
-                        # self.ang = -0.1
-                    case MovingState.UP:
-                        self.current_cell = (self.current_cell[0]-1, self.current_cell[1])
-                        # self.vel = 0.1
-                        # self.ang = 0.0
-                    case MovingState.DOWN:
-                        self.current_cell = (self.current_cell[0]+1, self.current_cell[1])
-                        # self.vel = 0.1
-                        # self.ang = 0.0
-                    case _:
-                        self.get_logger().info("No Valid Case Matched.")
-
-                self.get_logger().info(f"Current Cell: {self.current_cell}")
-            
-            # FIXME
-            # self.current_cell = self.start
-            # if self.moved_left:
-            #     self.current_cell = (self.current_cell[0] + 1, self.current_cell[1])
-            # elif self.moved_right:
-            #     self.current_cell = (self.current_cell[0]-1, self.current_cell[1])
-            # elif self.up:
-            #     self.current_cell = (self.current_cell[0], self.current_cell[1] - 1)
-            # else:
-            #     self.current_cell = (self.current_cell[0], self.current_cell[1] + 1)
-            # if self.maze_matrix[self.current_cell] > 0.0:
-            #     self.dist_from_start -= 1
-            # else:
-            #     self.dist_from_start += 1
-            #     self.maze_matrix[self.current_cell] = self.dist_from_start
-
-            # Detect walls and compute the next cell
+        current_cell, error = self.get_cell_from_pose(self.current_pose)
+        if is_start or (error < self.distance_tolerance and current_cell != self.current_cell):
+            self.get_logger().info(f"Current Cell: {current_cell}, Error: {error}, Pose: {self.current_pose}, Pose: {self.get_pose_from_cell(current_cell)}")
+            self.current_cell = current_cell
+            # we are in the center of the cell
             if self.floodfill_state == FloodFillState.REACH_GOAL or self.floodfill_state == FloodFillState.REACH_START:
                 self.detect_walls()
                 self.next_cell = self.floodfill_step()
 
-    
-
-
-            # TODO: move this to another function
-
             if self.floodfill_state == FloodFillState.REACH_GOAL and self.current_cell == self.goal :
-                # compute the shortest path
-                shortest_path, length = self.find_shortest_path(self.explored)
-                self.best_paths.append(shortest_path)
-                self.get_logger().info(f"Shortest Path: {shortest_path} with length {length}")
-
-                # invert the flood matrix to reach the start
-                self.flood_matrix = self.create_flood_matrix(self.dim, self.start)
-
-                self.floodfill_state = FloodFillState.REACH_START
-                self.logger.info("Goal reached. Returning to start.")
+                self.handle_goal_reached_exploring()
 
             if self.floodfill_state == FloodFillState.REACH_START and self.current_cell == self.start:
-                # extract the path from goal to start form the explored list
-                # find the goal node and split the list
-                goal_index = self.explored.index(self.goal)
-                explored = self.explored[:goal_index+1]                
-
-                # compute the shortest path
-                shortest_path, length = self.find_shortest_path(explored.reverse())
-                self.best_paths.append(shortest_path)
-                self.get_logger().info(f"Shortest Path: {shortest_path} with length {length}")
+                self.handle_start_reached_exploiting()
                 
-                if len(self.best_paths) > 1:
-                    self.get_logger().info("Multiple paths found. Deciding the best path...")
-                    self.best_path = min(self.best_paths, key=lambda x: len(x))
-                else:
-                    self.best_path = self.best_paths[0]
-
-                
-                self.floodfill_state = FloodFillState.SPRINT
-                self.get_logger().info("Sprint Mode Activated.")
-                self.get_logger().info(f"Best Path: {self.best_path}, Length: {len(self.best_path)}")
-
             if self.floodfill_state == FloodFillState.SPRINT and self.current_cell == self.goal:
-                self.get_logger().info("Goal reached. Done.")
-                self.mode = ThymioState.DONE
-
-                
+                self.handle_goal_reached_sprinting()
 
 
-            self.prev_cell_odom_pose = (self.new_pose[0], self.new_pose[1], self.new_pose[2])
-            
-        #self.get_logger().info(
-        #    "odometry: received pose (x: {:.2f}, y: {:.2f}, theta: {:.2f})".format(*pose2d),
-        #     throttle_duration_sec=0.5 # Throttle logging frequency to max 2Hz
-        #)
+    def handle_goal_reached_exploring(self):
+        # compute the shortest path
+        shortest_path, length = self.find_shortest_path(self.explored)
+        self.best_paths.append(shortest_path)
+        self.get_logger().info(f"Shortest Path: {shortest_path} with length {length}")
+
+        # invert the flood matrix to reach the start
+        self.flood_matrix = self.create_flood_matrix(self.dim, self.start)
+
+        self.floodfill_state = FloodFillState.REACH_START
+        self.logger.info("Goal reached. Returning to start.")
+
+    def handle_start_reached_exploiting(self):
+        # extract the path from goal to start form the explored list
+        # find the goal node and split the list
+        goal_index = self.explored.index(self.goal)
+        explored = self.explored[:goal_index+1]
+
+        # compute the shortest path
+        shortest_path, length = self.find_shortest_path(explored.reverse())
+        self.best_paths.append(shortest_path)
+        self.get_logger().info(f"Shortest Path: {shortest_path} with length {length}")
+        
+        if len(self.best_paths) > 1:
+            self.get_logger().info("Multiple paths found. Deciding the best path...")
+            self.best_path = min(self.best_paths, key=lambda x: len(x))
+        else:
+            self.best_path = self.best_paths[0]
+
+        
+        self.floodfill_state = FloodFillState.SPRINT
+        self.get_logger().info("Sprint Mode Activated.")
+        self.get_logger().info(f"Best Path: {self.best_path}, Length: {len(self.best_path)}")
+
+    def handle_goal_reached_sprinting(self):
+        self.get_logger().info("Goal reached. Done.")
+        self.mode = ThymioState.DONE
+
     
     # --------------------------------------------------------------------------------------------
     # wall detection and decision making
     def detect_walls(self):
-
+        # walls_robot = WallState((int(0<self.proximities['left']<0.1), int(self.proximities['center']>0), int(0<self.proximities['right']<0.1), int(self.proximities['left_back']>0 and self.proximities['right_back']>0)))
         walls_robot = WallState((int(self.proximities['left']>0), int(self.proximities['center']>0), int(self.proximities['right']>0), int(self.proximities['left_back']>0 and self.proximities['right_back']>0)))
+        self.get_logger().info(f"WALLS: {walls_robot}")
+        self.get_logger().info(f"WALLS: {self.proximities}")
         walls = WallState(self.rotate(walls_robot.value, self.initial_rotation))
-        self.wall_state_global = WallState(self.rotate(walls.value, self.new_pose[2]))
+        self.wall_state_global = WallState(self.rotate(walls.value, self.current_pose[2]))
         
         old_neighbors = self.maze_matrix[self.current_cell[0]][self.current_cell[1]]
         new_neighbors = [n if not w else None for n, w in zip(self.maze_matrix[self.current_cell[0]][self.current_cell[1]], walls.value)]
