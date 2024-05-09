@@ -9,7 +9,18 @@ import sys
 from geometry_msgs.msg import Twist, Pose
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Range, LaserScan, Imu
-from math import pi, sqrt, atan2, sin, cos, atan
+from math import pi, sqrt, atan2, sin, cos
+
+class Print:
+    """
+    This class simply the printing of colored text in the terminal.
+    """
+    RED = '\033[91m'
+    GREEN = '\033[92m'
+    BLUE = '\033[94m'
+    YELLOW = '\033[93m'
+    UNDERLINE = '\033[4m'
+    END = '\033[0m'
 
 
 class WallState(Enum):
@@ -56,17 +67,20 @@ class MovingState(Enum):
 class ControllerNode(Node):
     def __init__(self):
         super().__init__('controller_node')
+
+
+        self.max_speed = 0.1
+        self.max_angular_speed = 0.5
+
         self.odom_pose = None
         self.odom_velocity = None
         self.pose2d = None
         self.prev_cell_odom_pose = None
         self.start_pose = None
         self.current_pose = None
-        # self.new_pose = None
         # self.wall_state_robot = None
         self.wall_state_global = None
 
-        self.mode = ThymioState.WALK
         self.floodfill_state = FloodFillState.REACH_GOAL
         self.explored = []
         self.best_paths = []
@@ -87,8 +101,8 @@ class ControllerNode(Node):
         
 
         self.initial_rotation = pi
-        self.dim = (5,5)
-        self.goal = (2,2)
+        self.dim = (8, 8)
+        self.goal = (7, 0)
         self.start = (0, 0)
         self.flood_matrix = self.create_flood_matrix(self.dim, self.goal)
        
@@ -160,6 +174,10 @@ class ControllerNode(Node):
             cmd_vel = Twist() 
             cmd_vel.linear.x = self.linear_vel(goal_pose, current_pose, constant=0.8)
             cmd_vel.angular.z = self.angular_vel(goal_pose, current_pose)
+            # limit linear velocity in range [-max_speed, max_speed]
+            cmd_vel.linear.x = max(min(cmd_vel.linear.x, self.max_speed), -self.max_speed)
+            # limit angular velocity in range [-max_angular_speed, max_angular_speed]
+            cmd_vel.angular.z = max(min(cmd_vel.angular.z, self.max_angular_speed), -self.max_angular_speed)
             
             # Publish the command
             self.vel_publisher.publish(cmd_vel)
@@ -172,6 +190,8 @@ class ControllerNode(Node):
     def rotate_in_place(self, goal_pose, current_pose):
         cmd_vel = Twist()
         cmd_vel.angular.z = self.angular_vel(goal_pose, current_pose)
+        # limit angular velocity in range [-max_angular_speed, max_angular_speed]
+        cmd_vel.angular.z = max(min(cmd_vel.angular.z, self.max_angular_speed), -self.max_angular_speed)
         cmd_vel.linear.x = 0.0
         self.vel_publisher.publish(cmd_vel)
 
@@ -187,7 +207,7 @@ class ControllerNode(Node):
 
 
         goal_theta = self.steering_angle(goal_pose, self.current_pose)
-        if goal_theta >= self.angular_threshold: # Checks if there is a difference in the theta for the goal pose and the current pose (if we need to turn)
+        if abs(self.angular_difference(goal_theta, self.current_pose[2])) >= self.angular_threshold: # Checks if there is a difference in the theta for the goal pose and the current pose (if we need to turn)
             self.rotate_in_place(goal_pose, self.current_pose)
         else:
             self.move_to_pose(goal_pose, self.current_pose) # We do not need to turn anymore and therefore we can go straight
@@ -309,10 +329,6 @@ class ControllerNode(Node):
         if is_start or (error < self.distance_tolerance and current_cell != self.current_cell):
             self.get_logger().info(f"Current Cell: {current_cell}, Error: {error}, Pose: {self.current_pose}, Pose: {self.get_pose_from_cell(current_cell)}")
             self.current_cell = current_cell
-            # we are in the center of the cell
-            if self.floodfill_state == FloodFillState.REACH_GOAL or self.floodfill_state == FloodFillState.REACH_START:
-                self.detect_walls()
-                self.next_cell = self.floodfill_step()
 
             if self.floodfill_state == FloodFillState.REACH_GOAL and self.current_cell == self.goal :
                 self.handle_goal_reached_exploring()
@@ -322,6 +338,19 @@ class ControllerNode(Node):
                 
             if self.floodfill_state == FloodFillState.SPRINT and self.current_cell == self.goal:
                 self.handle_goal_reached_sprinting()
+
+            # we are in the center of the cell
+            if self.floodfill_state == FloodFillState.REACH_GOAL or self.floodfill_state == FloodFillState.REACH_START:
+                self.detect_walls()
+                self.next_cell = self.floodfill_step()
+                self.get_logger().info(f"Next Cell: {self.next_cell}")
+            elif self.floodfill_state == FloodFillState.SPRINT:
+                if self.best_path:
+                    self.next_cell = self.best_path.popLeft()
+                    self.get_logger().info(f"Next Cell: {self.next_cell}")
+                else:
+                    self.stop()
+                    self.get_logger().info("Done.")
 
 
     def handle_goal_reached_exploring(self):
@@ -334,16 +363,18 @@ class ControllerNode(Node):
         self.flood_matrix = self.create_flood_matrix(self.dim, self.start)
 
         self.floodfill_state = FloodFillState.REACH_START
-        self.logger.info("Goal reached. Returning to start.")
+        self.get_logger().info("Goal reached. Returning to start.")
 
     def handle_start_reached_exploiting(self):
         # extract the path from goal to start form the explored list
         # find the goal node and split the list
         goal_index = self.explored.index(self.goal)
         explored = self.explored[:goal_index+1]
+        self.get_logger().info(f"Explored: {self.explored}, Goal Index: {goal_index}, Explored: {explored})")
+        explored.reverse()
 
         # compute the shortest path
-        shortest_path, length = self.find_shortest_path(explored.reverse())
+        shortest_path, length = self.find_shortest_path(explored)
         self.best_paths.append(shortest_path)
         self.get_logger().info(f"Shortest Path: {shortest_path} with length {length}")
         
@@ -360,7 +391,6 @@ class ControllerNode(Node):
 
     def handle_goal_reached_sprinting(self):
         self.get_logger().info("Goal reached. Done.")
-        self.mode = ThymioState.DONE
 
     
     # --------------------------------------------------------------------------------------------
@@ -374,7 +404,7 @@ class ControllerNode(Node):
         self.wall_state_global = WallState(self.rotate(walls.value, self.current_pose[2]))
         
         old_neighbors = self.maze_matrix[self.current_cell[0]][self.current_cell[1]]
-        new_neighbors = [n if not w else None for n, w in zip(self.maze_matrix[self.current_cell[0]][self.current_cell[1]], walls.value)]
+        new_neighbors = [n if not w else None for n, w in zip(self.maze_matrix[self.current_cell[0]][self.current_cell[1]], self.wall_state_global.value)]
         # remove current cell as neighbor for all the removed neighbors
         for i, n in enumerate(old_neighbors):
             if n is not None and new_neighbors[i] is None:
@@ -439,19 +469,20 @@ class ControllerNode(Node):
             queue.append(self.current_cell)
 
             while not len(queue) == 0:
+                # TODO: detect the case in which the maze is not solvable
                 el = queue.popleft()
                 el_neighbors = self.maze_matrix[el[0]][el[1]]
-                print("el: ", el, el_neighbors)
-                # el_smallest_neighbor, el_smallest_neighbor_value = self.get_min_neighbors(el_neighbors, self.flood_matrix)
-                el_smallest_neighbor = min(self.flood_matrix[el[0]][el[1]] for el in el_neighbors if el is not None)
-                el_smallest_neighbor_value = self.flood_matrix[el_smallest_neighbor[0]][el_smallest_neighbor[1]]
+                # print("el: ", el, el_neighbors)
+                el_smallest_neighbor, el_smallest_neighbor_value = self.get_min_neighbors(el_neighbors, self.flood_matrix)
+                # el_smallest_neighbor = min(self.flood_matrix[el[0]][el[1]] for el in el_neighbors if el is not None)
+                # el_smallest_neighbor_value = self.flood_matrix[el_smallest_neighbor[0]][el_smallest_neighbor[1]]
                 # if el smaller than smallest neighbor
                 if self.flood_matrix[el[0]][el[1]] <= el_smallest_neighbor_value:
                     self.flood_matrix[el[0]][el[1]] = el_smallest_neighbor_value + 1
                     for n in el_neighbors:
                         if n is not None and n not in queue:
                             queue.append(n)
-                            print("adding: ", n, "to queue: ", queue)
+                            # print("adding: ", n, "to queue: ", queue)
             
             # recompute the smallest neighbors
             smallest_neighbors, smallest_neighbor_value = self.get_min_neighbors(neighbors, self.flood_matrix)
@@ -524,32 +555,20 @@ class ControllerNode(Node):
         msg = "Current knowledge of the maze:\n"
 
         for i in range(self.maze_matrix.shape[0]):
-            msg += "\033[4m" + " "*4 if (i, 0) not in self.maze_matrix[i][0] else " "*4
-        msg += "\033[0m" + "\n"
+            msg += Print.UNDERLINE + " "*4 if (i, 0) not in self.maze_matrix[i][0] else " "*4
+        msg += Print.END + "\n"
         
         for i in range(self.maze_matrix.shape[0]):
             for j in range(self.maze_matrix.shape[1]):
                 neighbors = self.maze_matrix[i][j]
                 # print underlined if there is bottom wall
-                msg += "\033[4m" if (i + 1, j) not in neighbors else ""
-                
-                # print("\033[4m" if (i + 1, j) not in neighbors else "", end="")
-                # print left wall
+                msg += Print.UNDERLINE if (i + 1, j) not in neighbors else ""
                 msg += "│" if (i, j - 1) not in neighbors else " "
-                # print("│" if (i, j - 1) not in neighbors else " ", end="")
-                # print value
-                msg += "\033[91m" if (i, j) == self.start else "\033[92m" if (i, j) == self.goal else "\033[94m" if (i, j) in self.explored else ""
+                msg += Print.RED if (i, j) == self.start else Print.GREEN if (i, j) == self.goal else Print.YELLOW if (i, j) == self.current_cell else Print.BLUE if (i, j) in self.explored else ""
                 msg += "{:<2}".format(self.flood_matrix[i][j])
-                msg += "\033[0m" if (i, j) == self.start or (i, j) == self.goal or (i, j) in self.explored else ""
-                # print("\033[91m" if (i, j) == self.start else "\033[92m" if (i, j) == self.goal else "\033[94m" if (i, j) in self.explored else "", end="")
-                # print("{:<2}".format(self.flood_matrix[i][j]), end="")
-                # print("\033[0m" if (i, j) == self.start or (i, j) == self.goal or (i, j) in self.explored else "", end="")
-                #print right wall
+                msg += Print.END if (i, j) == self.start or (i, j) == self.goal or (i, j) in self.explored or (i, j) == self.current_cell else ""
                 msg += "│" if (i, j + 1) not in neighbors else " "
-                msg += "\033[0m"
-                # print("│" if (i, j + 1) not in neighbors else " ", end="")
-                # print("\033[0m", end="")
-            # print()
+                msg += Print.END 
             msg += "\n"
     
         self.get_logger().info(msg)
