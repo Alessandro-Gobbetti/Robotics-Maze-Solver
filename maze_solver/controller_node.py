@@ -69,7 +69,7 @@ class ControllerNode(Node):
         super().__init__('controller_node')
 
 
-        self.max_speed = 0.1
+        self.max_speed = 0.05
         self.max_angular_speed = 0.5
 
         self.odom_pose = None
@@ -80,6 +80,9 @@ class ControllerNode(Node):
         self.current_pose = None
         # self.wall_state_robot = None
         self.wall_state_global = None
+        self.distance_to_wall = None
+        self.walls_threshold = 0.03
+        self.is_rotation_needed = False
 
         self.floodfill_state = FloodFillState.REACH_GOAL
         self.explored = []
@@ -123,7 +126,7 @@ class ControllerNode(Node):
         # self.maze_matrix = np.zeros((self.num_cells, self.num_cells)) # Creates the matrix by dividing the maze into cells that are defined as above. The elements denote how far we are from the goal.
         # self.start_cell = (0,0) # We start in the middle of the cell
         # self.dist_from_start = 0.0 # Defines how many cells away we are from the starting cell
-        self.distance_tolerance = 0.01
+        self.distance_tolerance = 0.02
         self.current_cell = (0,0)
         self.move_dir = MovingState.DOWN
         self.proximities = {
@@ -173,7 +176,50 @@ class ControllerNode(Node):
             # linear velocity along the x-axis (forward) and angular velocity along the z-axis (yaw angle)
             cmd_vel = Twist() 
             cmd_vel.linear.x = self.linear_vel(goal_pose, current_pose, constant=0.8)
-            cmd_vel.angular.z = self.angular_vel(goal_pose, current_pose)
+            # TODO: adjust angular velocity based on the distance between the walls
+
+
+            if self.proximities['left'] > 0 and self.proximities['right'] > 0:
+                if self.distance_to_wall is None:
+                    self.distance_to_wall = np.mean([self.proximities['left'], self.proximities['right']])
+                    self.get_logger().info(f"Initializing distance to wall: {self.distance_to_wall}")
+
+                # two walls, keep distance to both walls close to equal
+                if abs(self.proximities['left'] - self.proximities['right']) > self.walls_threshold:
+                    # turn right or left
+                    cmd_vel.angular.z = (self.proximities['left'] - self.proximities['right'])
+                    self.get_logger().info(f"Adjusting angular velocity: {cmd_vel.angular.z}")
+                # oherwise, we are good!  
+            elif self.proximities['left'] > 0:
+                # keep distance to that wall
+                if self.proximities['left'] > self.distance_to_wall + self.walls_threshold:
+                    # turn right
+                    cmd_vel.angular.z = self.distance_to_wall - self.proximities['left']
+                    self.get_logger().info(f"Adjusting angular velocity LEFT >: {cmd_vel.angular.z}")
+                elif self.proximities['left'] < self.distance_to_wall - self.walls_threshold:
+                    # turn left
+                    cmd_vel.angular.z = -(self.distance_to_wall - self.proximities['left'])
+                    self.get_logger().info(f"Adjusting angular velocity LEFT <: {cmd_vel.angular.z}")
+            elif self.proximities['right'] > 0:
+                # keep distance to that wall
+                if self.proximities['right'] < self.distance_to_wall - self.walls_threshold:
+                    # turn right
+                    cmd_vel.angular.z = self.distance_to_wall - self.proximities['right']
+                    self.get_logger().info(f"Adjusting angular velocity RIGHT <: {cmd_vel.angular.z}")
+                elif self.proximities['right'] > self.distance_to_wall + self.walls_threshold:
+                    # turn left
+                    cmd_vel.angular.z = -(self.distance_to_wall - self.proximities['right'])
+                    self.get_logger().info(f"Adjusting angular velocity RIGHT >: {cmd_vel.angular.z}")
+                # wait(10)
+            else:
+                # no walls, rely on odometry and hope
+                cmd_vel.angular.z = self.angular_vel(goal_pose, current_pose)
+
+            # cmd_vel.angular.z *= 3
+
+            # If only one wall, keep distance to that wall fixed to precomputed value (the distance at the start?)
+
+            # cmd_vel.angular.z = self.angular_vel(goal_pose, current_pose)
             # limit linear velocity in range [-max_speed, max_speed]
             cmd_vel.linear.x = max(min(cmd_vel.linear.x, self.max_speed), -self.max_speed)
             # limit angular velocity in range [-max_angular_speed, max_angular_speed]
@@ -188,12 +234,19 @@ class ControllerNode(Node):
 
 
     def rotate_in_place(self, goal_pose, current_pose):
+        self.get_logger().info("Rotating in place")
         cmd_vel = Twist()
         cmd_vel.angular.z = self.angular_vel(goal_pose, current_pose)
         # limit angular velocity in range [-max_angular_speed, max_angular_speed]
         cmd_vel.angular.z = max(min(cmd_vel.angular.z, self.max_angular_speed), -self.max_angular_speed)
         cmd_vel.linear.x = 0.0
         self.vel_publisher.publish(cmd_vel)
+
+        goal_theta = self.steering_angle(goal_pose, self.current_pose)
+
+        if abs(self.angular_difference(goal_theta, self.current_pose[2])) < self.angular_threshold:
+            self.get_logger().info("Done rotating in place")
+            self.is_rotation_needed = False
 
     def goto(self, goal_pose):
 
@@ -205,9 +258,8 @@ class ControllerNode(Node):
         #     else:
         #         self.is_stopped = False
 
-
-        goal_theta = self.steering_angle(goal_pose, self.current_pose)
-        if abs(self.angular_difference(goal_theta, self.current_pose[2])) >= self.angular_threshold: # Checks if there is a difference in the theta for the goal pose and the current pose (if we need to turn)
+        if self.is_rotation_needed:
+            # Checks if there is a difference in the theta for the goal pose and the current pose (if we need to turn)
             self.rotate_in_place(goal_pose, self.current_pose)
         else:
             self.move_to_pose(goal_pose, self.current_pose) # We do not need to turn anymore and therefore we can go straight
@@ -326,7 +378,7 @@ class ControllerNode(Node):
             self.start_pose = (pose2d[0], pose2d[1], pose2d[2])
 
         current_cell, error = self.get_cell_from_pose(self.current_pose)
-        if is_start or (error < self.distance_tolerance and current_cell != self.current_cell):
+        if is_start or (error < self.distance_tolerance and current_cell != self.current_cell) or  0 < self.proximities['center'] < 0.2:
             self.get_logger().info(f"Current Cell: {current_cell}, Error: {error}, Pose: {self.current_pose}, Pose: {self.get_pose_from_cell(current_cell)}")
             self.current_cell = current_cell
 
@@ -343,10 +395,21 @@ class ControllerNode(Node):
             if self.floodfill_state == FloodFillState.REACH_GOAL or self.floodfill_state == FloodFillState.REACH_START:
                 self.detect_walls()
                 self.next_cell = self.floodfill_step()
-                self.get_logger().info(f"Next Cell: {self.next_cell}")
+                
+                # compute if we first need to rotate in place
+                goal_pose = self.get_pose_from_cell(self.next_cell)
+                goal_theta = self.steering_angle(goal_pose, self.current_pose)
+                self.is_rotation_needed = abs(self.angular_difference(goal_theta, self.current_pose[2])) >= self.angular_threshold
+
+                self.get_logger().info(f"Next Cell: {self.next_cell}, is_rotation_needed: {self.is_rotation_needed}")
             elif self.floodfill_state == FloodFillState.SPRINT:
                 if self.best_path:
                     self.next_cell = self.best_path.popLeft()
+                    # compute if we first need to rotate in place
+                    goal_pose = self.get_pose_from_cell(self.next_cell)
+                    goal_theta = self.steering_angle(goal_pose, self.current_pose)
+                    self.is_rotation_needed = abs(self.angular_difference(goal_theta, self.current_pose[2])) >= self.angular_threshold
+
                     self.get_logger().info(f"Next Cell: {self.next_cell}")
                 else:
                     self.stop()
@@ -394,10 +457,14 @@ class ControllerNode(Node):
 
     
     # --------------------------------------------------------------------------------------------
+    def check_walls(self):
+        return WallState((int(self.proximities['left']>0), int(self.proximities['center']>0), int(self.proximities['right']>0), int(self.proximities['left_back']>0 and self.proximities['right_back']>0)))
+
+
     # wall detection and decision making
     def detect_walls(self):
         # walls_robot = WallState((int(0<self.proximities['left']<0.1), int(self.proximities['center']>0), int(0<self.proximities['right']<0.1), int(self.proximities['left_back']>0 and self.proximities['right_back']>0)))
-        walls_robot = WallState((int(self.proximities['left']>0), int(self.proximities['center']>0), int(self.proximities['right']>0), int(self.proximities['left_back']>0 and self.proximities['right_back']>0)))
+        walls_robot = self.check_walls()
         self.get_logger().info(f"WALLS: {walls_robot}")
         self.get_logger().info(f"WALLS: {self.proximities}")
         walls = WallState(self.rotate(walls_robot.value, self.initial_rotation))
@@ -467,17 +534,21 @@ class ControllerNode(Node):
         # if current smaller than all neighbors, floodfill the neighbors
         if self.flood_matrix[self.current_cell[0]][self.current_cell[1]] < smallest_neighbor_value:
             queue.append(self.current_cell)
+            max_iters = 100
+            iters = 0
 
             while not len(queue) == 0:
+                iters += 1
+                if iters > max_iters:
+                    exit()
+
                 # TODO: detect the case in which the maze is not solvable
                 el = queue.popleft()
                 el_neighbors = self.maze_matrix[el[0]][el[1]]
                 # print("el: ", el, el_neighbors)
                 el_smallest_neighbor, el_smallest_neighbor_value = self.get_min_neighbors(el_neighbors, self.flood_matrix)
-                # el_smallest_neighbor = min(self.flood_matrix[el[0]][el[1]] for el in el_neighbors if el is not None)
-                # el_smallest_neighbor_value = self.flood_matrix[el_smallest_neighbor[0]][el_smallest_neighbor[1]]
-                # if el smaller than smallest neighbor
                 if self.flood_matrix[el[0]][el[1]] <= el_smallest_neighbor_value:
+                    # in case the current cell is smaller than all neighbors, floodfill the neighbors
                     self.flood_matrix[el[0]][el[1]] = el_smallest_neighbor_value + 1
                     for n in el_neighbors:
                         if n is not None and n not in queue:
