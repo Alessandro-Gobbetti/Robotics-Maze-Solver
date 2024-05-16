@@ -234,7 +234,6 @@ class ControllerNode(Node):
 
 
     def rotate_in_place(self, goal_pose, current_pose):
-        self.get_logger().info("Rotating in place")
         cmd_vel = Twist()
         cmd_vel.angular.z = self.angular_vel(goal_pose, current_pose)
         # limit angular velocity in range [-max_angular_speed, max_angular_speed]
@@ -378,7 +377,7 @@ class ControllerNode(Node):
             self.start_pose = (pose2d[0], pose2d[1], pose2d[2])
 
         current_cell, error = self.get_cell_from_pose(self.current_pose)
-        if is_start or (error < self.distance_tolerance and current_cell != self.current_cell) or  0 < self.proximities['center'] < 0.2:
+        if is_start or (error < self.distance_tolerance and current_cell != self.current_cell) or  0 < self.proximities['center'] < 0.05:
             self.get_logger().info(f"Current Cell: {current_cell}, Error: {error}, Pose: {self.current_pose}, Pose: {self.get_pose_from_cell(current_cell)}")
             self.current_cell = current_cell
 
@@ -399,7 +398,7 @@ class ControllerNode(Node):
                 # compute if we first need to rotate in place
                 goal_pose = self.get_pose_from_cell(self.next_cell)
                 goal_theta = self.steering_angle(goal_pose, self.current_pose)
-                self.is_rotation_needed = abs(self.angular_difference(goal_theta, self.current_pose[2])) >= self.angular_threshold
+                self.is_rotation_needed = abs(self.angular_difference(goal_theta, self.current_pose[2])) >= self.angular_threshold + pi/6
 
                 self.get_logger().info(f"Next Cell: {self.next_cell}, is_rotation_needed: {self.is_rotation_needed}")
             elif self.floodfill_state == FloodFillState.SPRINT:
@@ -408,7 +407,7 @@ class ControllerNode(Node):
                     # compute if we first need to rotate in place
                     goal_pose = self.get_pose_from_cell(self.next_cell)
                     goal_theta = self.steering_angle(goal_pose, self.current_pose)
-                    self.is_rotation_needed = abs(self.angular_difference(goal_theta, self.current_pose[2])) >= self.angular_threshold
+                    self.is_rotation_needed = abs(self.angular_difference(goal_theta, self.current_pose[2])) >= self.angular_threshold + pi/6
 
                     self.get_logger().info(f"Next Cell: {self.next_cell}")
                 else:
