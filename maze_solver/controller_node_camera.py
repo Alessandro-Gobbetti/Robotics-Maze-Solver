@@ -458,7 +458,7 @@ class ControllerNode(Node):
                 self.handle_goal_reached_exploring()
 
             if self.floodfill_state == FloodFillState.REACH_START and self.current_cell == self.start:
-                self.handle_start_reached_exploiting()
+                self.handle_start_reached_exploring()
                 
             if self.floodfill_state == FloodFillState.SPRINT and self.current_cell == self.goal:
                 self.handle_goal_reached_sprinting()
@@ -476,7 +476,7 @@ class ControllerNode(Node):
                 self.get_logger().info(f"Next Cell: {self.next_cell}, is_rotation_needed: {self.is_rotation_needed}")
             elif self.floodfill_state == FloodFillState.SPRINT:
                 if self.best_path:
-                    self.next_cell = self.best_path.popLeft()
+                    self.next_cell = self.best_path.pop(0)
                     # compute if we first need to rotate in place
                     goal_pose = self.get_pose_from_cell(self.next_cell)
                     goal_theta = self.steering_angle(goal_pose, self.current_pose)
@@ -490,7 +490,9 @@ class ControllerNode(Node):
 
     def handle_goal_reached_exploring(self):
         # compute the shortest path
-        shortest_path, length = self.find_shortest_path(self.explored)
+        explored = self.explored
+        explored.append(self.current_cell)
+        shortest_path, length = self.find_shortest_path(explored)
         self.best_paths.append(shortest_path)
         self.get_logger().info(f"Shortest Path: {shortest_path} with length {length}")
 
@@ -500,13 +502,15 @@ class ControllerNode(Node):
         self.floodfill_state = FloodFillState.REACH_START
         self.get_logger().info("Goal reached. Returning to start.")
 
-    def handle_start_reached_exploiting(self):
+    def handle_start_reached_exploring(self):
         # extract the path from goal to start form the explored list
         # find the goal node and split the list
-        goal_index = self.explored.index(self.goal)
-        explored = self.explored[:goal_index+1]
-        self.get_logger().info(f"Explored: {self.explored}, Goal Index: {goal_index}, Explored: {explored})")
-        explored.reverse()
+        explored = self.explored + [self.current_cell]
+        goal_index = explored.index(self.goal)
+        explored = explored[goal_index:]
+        self.get_logger().info(f"Explored: {self.explored}, Goal Index: {goal_index}, Explored now: {explored})")
+        # reverse the list
+        explored = explored[::-1]
 
         # compute the shortest path
         shortest_path, length = self.find_shortest_path(explored)
@@ -515,6 +519,8 @@ class ControllerNode(Node):
         
         if len(self.best_paths) > 1:
             self.get_logger().info("Multiple paths found. Deciding the best path...")
+            for i, path in enumerate(self.best_paths):
+                self.get_logger().info(f"Path {i}: {path}, Length: {len(path)}")
             self.best_path = min(self.best_paths, key=lambda x: len(x))
         else:
             self.best_path = self.best_paths[0]
@@ -606,12 +612,14 @@ class ControllerNode(Node):
         # if current smaller than all neighbors, floodfill the neighbors
         if self.flood_matrix[self.current_cell[0]][self.current_cell[1]] < smallest_neighbor_value:
             queue.append(self.current_cell)
-            max_iters = 100
+            max_iters = 1000
             iters = 0
 
             while not len(queue) == 0:
                 iters += 1
                 if iters > max_iters:
+                    self.get_logger().error("The Maze is not solvable.")
+                    self.stop()
                     exit()
 
                 # TODO: detect the case in which the maze is not solvable
