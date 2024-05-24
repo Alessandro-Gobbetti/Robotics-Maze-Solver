@@ -60,11 +60,17 @@ class ThymioState(Enum):
     WALK = 3
     DONE = 4
 
-class MovingState(Enum):
-    UP = 1
-    DOWN = 2
-    LEFT = 3
-    RIGHT = 4
+class Position(Enum):
+    NORTH = 1
+    EAST = 2
+    WEST = 3
+    SOUTH = 4
+
+class CallbackUsage(Enum):
+    CAMERA = 1
+    ODOM = 2
+    CALC = 3
+
 
 class ControllerNode(Node):
     def __init__(self):
@@ -123,18 +129,10 @@ class ControllerNode(Node):
         self.is_stopped = False
         
         self.angular_threshold = 0.01 # Defines the threshold for the differ
-        self.cell_side_length = 0.25 # Defines the length of the side of the cell
-        # self.cell_area = self.cell_side_length ** 2
-        # self.start_vel = 0.1 # Defines the start velocity of the cell
-        # self.maze_side = 5.0 # Defines the length of the side of the maze
-        # self.maze_area = 5.0**2 # The area of the maze that we are traversing
-        # self.num_cells = self.maze_side // self.cell_side_length
-        # self.maze_matrix = np.zeros((self.num_cells, self.num_cells)) # Creates the matrix by dividing the maze into cells that are defined as above. The elements denote how far we are from the goal.
-        # self.start_cell = (0,0) # We start in the middle of the cell
-        # self.dist_from_start = 0.0 # Defines how many cells away we are from the starting cell
+
         self.distance_tolerance = 0.02
         self.current_cell = (0,0)
-        self.move_dir = MovingState.DOWN
+        self.move_dir = Position.SOUTH
         self.proximities = {
             'left': -1,
             'center_left': -1,
@@ -152,11 +150,13 @@ class ControllerNode(Node):
         self.prox_center_right = self.create_subscription(Range, 'proximity/center_right', lambda message: self.proximity_callback(message, "center_right"), 10)
         self.prox_left_back= self.create_subscription(Range, 'proximity/rear_left', lambda message: self.proximity_callback(message, "left_back"), 10)
         self.prox_right_back = self.create_subscription(Range, 'proximity/rear_right', lambda message: self.proximity_callback(message, "right_back"), 10)
-        
+        self.current_callback_dependency = CallbackUsage.CAMERA
+        self.aligned = False
+        self.centred = False
     
     def run(self):
         # Create and immediately start a timer that will regularly publish commands
-        self.timer = self.create_timer(1/60, self.update_callback)
+        self.timer = self.create_timer(1/60, self.move)
     
     def stop(self):
         # Set all velocities to zero
@@ -195,8 +195,41 @@ class ControllerNode(Node):
             image_center_x = cv_image.shape[1] / 2
             image_center_y = cv_image.shape[0] / 2
 
-            offset_x = square_center_x - image_center_x
-            offset_y = square_center_y - image_center_y
+            if self.current_callback_dependency == CallbackUsage.CAMERA:
+
+                offset_x = square_center_x - image_center_x
+                offset_y = square_center_y - image_center_y
+
+
+                # Command to align the robot with the red square
+                cmd_vel = Twist()
+
+                if not self.aligned:
+                    # Adjust angular velocity to align with the red square
+                    if abs(offset_x) > 10:  # Threshold to avoid small jitters
+                        cmd_vel.angular.z = -0.002 * offset_x  # Adjust turning speed
+                    else:
+                        self.aligned = True  # Aligned when x offset is within the threshold
+                        cmd_vel.angular.z = 0
+
+                    cmd_vel.linear.x = 0  # Stop forward movement until aligned
+                else:
+                    if abs(offset_y) > 10:
+                        self.centered = False
+                        # Move towards the square
+                        if abs(offset_y) > 10:  # Threshold to avoid small jitters
+                            cmd_vel.linear.x = -0.002 * offset_y  # Adjust forward speed
+                        else:
+                            self.centered = True
+                            cmd_vel.linear.x = 0
+                            self.aligned = False  # Reset aligned for the next movement
+                    else:
+                        # The robot is centered
+                        self.centered = True
+                        cmd_vel.linear.x = 0
+                        cmd_vel.angular.z = 0
+                        self.current_callback_dependency = CallbackUsage.CALC
+                self.vel_publisher.publish(cmd_vel)
 
             # Draw the bounding box and center on the image
             cv2.rectangle(cv_image, (x, y), (x + w, y + h), (0, 255, 0), 2)
@@ -211,222 +244,27 @@ class ControllerNode(Node):
 
     # --------------------------------------------------------------------------------------------
     # main loop
-
-    def update_callback(self):
-
-        if self.next_cell and self.READY:
-            self.goto(self.get_pose_from_cell(self.next_cell))
-
-       
-
-    def move_to_pose(self, goal_pose, current_pose):
-        if self.euclidean_distance(goal_pose, current_pose) >= self.distance_tolerance:
-            # We still haven't reached the goal pose. Use a proportional controller to compute velocities
-            # that will move the turtle towards the goal (https://en.wikipedia.org/wiki/Proportional_control)
         
-            # Twist represents 3D linear and angular velocities, in turtlesim we only care about 2 dimensions:
-            # linear velocity along the x-axis (forward) and angular velocity along the z-axis (yaw angle)
-            cmd_vel = Twist() 
-            cmd_vel.linear.x = self.linear_vel(goal_pose, current_pose, constant=0.8)
-            # TODO: adjust angular velocity based on the distance between the walls
-
-            # TODO: avoid collisions with walls
-            # FIXME
-            # if 0 < self.proximities['center_left'] < 0.03 or 0 < self.proximities['left'] < 0.03:
-            #     cmd_vel.angular.z = -0.5
-            #     cmd_vel.linear.x = 0.0
-            #     self.get_logger().info("Avoiding left wall")
-            # elif 0 < self.proximities['center_right'] < 0.03 or 0 < self.proximities['right'] < 0.03:
-            #     cmd_vel.angular.z = 0.5
-            #     cmd_vel.linear.x = 0.0
-            #     self.get_logger().info("Avoiding right wall")
-            # else:
-            #     cmd_vel.angular.z = self.angular_vel(goal_pose, current_pose)
-
-
-            # if self.proximities['left'] > 0 and self.proximities['right'] > 0:
-            #     if self.distance_to_wall is None:
-            #         self.distance_to_wall = np.mean([self.proximities['left'], self.proximities['right']])
-            #         self.get_logger().info(f"Initializing distance to wall: {self.distance_to_wall}")
-
-            #     # two walls, keep distance to both walls close to equal
-            #     if abs(self.proximities['left'] - self.proximities['right']) > self.walls_threshold:
-            #         # turn right or left
-            #         cmd_vel.angular.z = (self.proximities['left'] - self.proximities['right'])
-            #         self.get_logger().info(f"Adjusting angular velocity: {cmd_vel.angular.z}")
-            #     # oherwise, we are good!  
-            # elif self.proximities['left'] > 0:
-            #     # keep distance to that wall
-            #     if self.proximities['left'] > self.distance_to_wall + self.walls_threshold:
-            #         # turn right
-            #         cmd_vel.angular.z = self.distance_to_wall - self.proximities['left']
-            #         self.get_logger().info(f"Adjusting angular velocity LEFT >: {cmd_vel.angular.z}")
-            #     elif self.proximities['left'] < self.distance_to_wall - self.walls_threshold:
-            #         # turn left
-            #         cmd_vel.angular.z = -(self.distance_to_wall - self.proximities['left'])
-            #         self.get_logger().info(f"Adjusting angular velocity LEFT <: {cmd_vel.angular.z}")
-            # elif self.proximities['right'] > 0:
-            #     # keep distance to that wall
-            #     if self.proximities['right'] < self.distance_to_wall - self.walls_threshold:
-            #         # turn right
-            #         cmd_vel.angular.z = self.distance_to_wall - self.proximities['right']
-            #         self.get_logger().info(f"Adjusting angular velocity RIGHT <: {cmd_vel.angular.z}")
-            #     elif self.proximities['right'] > self.distance_to_wall + self.walls_threshold:
-            #         # turn left
-            #         cmd_vel.angular.z = -(self.distance_to_wall - self.proximities['right'])
-            #         self.get_logger().info(f"Adjusting angular velocity RIGHT >: {cmd_vel.angular.z}")
-            #     # wait(10)
-            # else:
-                # no walls, rely on odometry and hope
-            # cmd_vel.angular.z = self.angular_vel(goal_pose, current_pose)
-
-            # cmd_vel.angular.z *= 3
-
-            # If only one wall, keep distance to that wall fixed to precomputed value (the distance at the start?)
-
-            # cmd_vel.angular.z = self.angular_vel(goal_pose, current_pose)
-            # limit linear velocity in range [-max_speed, max_speed]
-            cmd_vel.linear.x = max(min(cmd_vel.linear.x, self.max_speed), -self.max_speed)
-            # limit angular velocity in range [-max_angular_speed, max_angular_speed]
-            cmd_vel.angular.z = max(min(cmd_vel.angular.z, self.max_angular_speed), -self.max_angular_speed)
+    def move(self):
+        if self.current_callback_dependency == CallbackUsage.CAMERA:
+            self.get_logger().info("Using camera to align")
+        elif self.current_callback_dependency == CallbackUsage.ODOM:
+            self.get_logger().info("Using Odometry to align")
+        elif self.current_callback_dependency == CallbackUsage.CALC:
+            self.detect_walls()
+            self.next_cell = self.floodfill_step()
+            ###...
             
-            # Publish the command
-            self.vel_publisher.publish(cmd_vel)
-        else:
-            self.get_logger().info("Goal reached, shutting down...")
-            self.is_stopped = self.get_clock().now()
-            self.stop()
-
-
-    def rotate_in_place(self, goal_pose, current_pose):
-        # cmd_vel = Twist()
-        # cmd_vel.angular.z = self.angular_vel(goal_pose, current_pose)
-        # # limit angular velocity in range [-max_angular_speed, max_angular_speed]
-        # cmd_vel.angular.z = max(min(cmd_vel.angular.z, self.max_angular_speed), -self.max_angular_speed)
-        # cmd_vel.linear.x = 0.0
-        # self.vel_publisher.publish(cmd_vel)
-
-        # goal_theta = self.steering_angle(goal_pose, self.current_pose)
-
-        if abs(self.angular_difference(self.steering_angle(goal_pose, self.current_pose), self.current_pose[2])) < self.angular_threshold:
-            self.get_logger().info("Done rotating in place")
-            self.stop()
-            self.is_rotation_needed = False
-        else:
-            cmd_vel = Twist()
-            cmd_vel.angular.z = self.angular_vel(goal_pose, current_pose)
-            # limit angular velocity in range [-max_angular_speed, max_angular_speed]
-            cmd_vel.angular.z = max(min(cmd_vel.angular.z, self.max_angular_speed), -self.max_angular_speed)
-            cmd_vel.linear.x = 0.0
-            self.vel_publisher.publish(cmd_vel)
-
-        
-    def goto(self, goal_pose):
-
-        # if self.is_stopped:
-        #     # wait for one second
-        #     if self.get_clock().now().seconds_nanoseconds()[0] - self.is_stopped.seconds_nanoseconds()[0] < 1:
-        #         self.stop()
-        #         return
-        #     else:
-        #         self.is_stopped = False
-
-        if self.is_rotation_needed:
-            # Checks if there is a difference in the theta for the goal pose and the current pose (if we need to turn)
-            self.rotate_in_place(goal_pose, self.current_pose)
-        else:
-            self.move_to_pose(goal_pose, self.current_pose) # We do not need to turn anymore and therefore we can go straight
-        
-
-
-    def euclidean_distance(self, goal_pose, current_pose):
-        """Euclidean distance between current pose and the goal."""
-        return sqrt(pow((goal_pose[0] - current_pose[0]), 2) +
-                    pow((goal_pose[1] - current_pose[1]), 2))
-
-    def angular_difference(self, goal_theta, current_theta):
-        """Compute shortest rotation from orientation current_theta to orientation goal_theta"""
-        return atan2(sin(goal_theta - current_theta), cos(goal_theta - current_theta))
-
-    def linear_vel(self, goal_pose, current_pose, constant=1.5):
-        """See video: https://www.youtube.com/watch?v=Qh15Nol5htM."""
-        return constant * self.euclidean_distance(goal_pose, current_pose)
-
-    def steering_angle(self, goal_pose, current_pose):
-        """See video: https://www.youtube.com/watch?v=Qh15Nol5htM."""
-        return atan2(goal_pose[1] - current_pose[1], goal_pose[0] - current_pose[0])
-
-    def angular_vel(self, goal_pose, current_pose, constant=6):
-        """See video: https://www.youtube.com/watch?v=Qh15Nol5htM."""
-        goal_theta = self.steering_angle(goal_pose, current_pose)
-        return constant * self.angular_difference(goal_theta, current_pose[2])
-
-   
-
-    def get_cell_from_pose(self, pose2d: tuple):
-        """
-        This function converts a given 2D pose in the odometry frame to cell coordinates in the maze matrix.
-        It also computes the error in this conversion. If the error is 0.0, it means the robot is exactly at the center of the cell.
-        The conversion depends on the initial rotation of the robot.
-
-        Parameters
-        ----------
-        pose2d (tuple): A tuple (x, y) representing the 2D pose in the odometry frame.
-
-        Returns
-        -------
-        cell (tuple): A tuple (x, y) representing the cell coordinates in the grid map.
-        euclidean_error (float): The Euclidean distance between the actual pose and the center of the cell.
-        """
-
-        x = (pose2d[0] / self.cell_side_length) + self.start[0]
-        y = (pose2d[1] / self.cell_side_length) + self.start[1]
-
-        dir = round(self.initial_rotation / (pi/2)) # -2, -1, 0, 1, 2
-        # if dir == -2 or dir == 2:
-        #     x = x
-        #     y = y
-        # elif dir == -1:
-        #     x = x
-        #     y = y
-        if dir == 0: # moving up, inverted x
-            x = -x
-            # y = y
-        elif dir == 1: 
-            # x = x
-            y = -y
-
-        # rotate the 2d coordinates
-        # x = x * cos(orientation) - y * sin(orientation)
-        # y = x * sin(orientation) + y * cos(orientation)
-
-        # return the rounded coordinates + rounding error
-        cell = (round(x), round(y))
-        error = ((x - cell[0]) * self.cell_side_length, (y - cell[1]) * self.cell_side_length) 
-        euclidean_error = sqrt(error[0]**2 + error[1]**2)
-        return cell, euclidean_error
-
-    def get_pose_from_cell(self, cell: tuple):
-        """
-        Converts a given cell coordinate in the maze matrix to a 2D pose in the odometry frame.
-
-        Parameters
-        ----------
-        cell (tuple): A tuple (x, y) representing the cell coordinates in the maze matrix.
-
-        Returns
-        -------
-        pose2d (tuple): A tuple (x, y) representing the 2D pose in the odometry frame.
-        """
-        x = cell[0] * self.cell_side_length
-        y = cell[1] * self.cell_side_length
-        dir = round(self.initial_rotation / (pi/2)) # -2, -1, 0, 1, 2
-        if dir == 0:
-            x = -x
-        elif dir == 1:
-            y = -y
-        return (x, y)
-        
+    def update_position(self):
+        if self.orientation == Position.SOUTH:
+            self.current_cell = (self.current_cell[0], self.current_cell[1] + 1)
+        elif self.orientation == Position.WEST:
+            self.current_cell = (self.current_cell[0] + 1, self.current_cell[1])
+        elif self.orientation == Position.NORTH:
+            self.current_cell = (self.current_cell[0], self.current_cell[1] - 1)
+        elif self.orientation == Position.EAST:
+            self.current_cell = (self.current_cell[0] - 1, self.current_cell[1])
+        self.get_logger().info(f"Moved to cell: {self.current_cell}")
     # --------------------------------------------------------------------------------------------
     # Callback functions
 
@@ -487,6 +325,71 @@ class ControllerNode(Node):
                     self.stop()
                     self.get_logger().info("Done.")
 
+
+    def get_cell_from_pose(self, pose2d: tuple):
+        """
+        This function converts a given 2D pose in the odometry frame to cell coordinates in the maze matrix.
+        It also computes the error in this conversion. If the error is 0.0, it means the robot is exactly at the center of the cell.
+        The conversion depends on the initial rotation of the robot.
+
+        Parameters
+        ----------
+        pose2d (tuple): A tuple (x, y) representing the 2D pose in the odometry frame.
+
+        Returns
+        -------
+        cell (tuple): A tuple (x, y) representing the cell coordinates in the grid map.
+        euclidean_error (float): The Euclidean distance between the actual pose and the center of the cell.
+        """
+
+        x = (pose2d[0] / self.cell_side_length) + self.start[0]
+        y = (pose2d[1] / self.cell_side_length) + self.start[1]
+
+        dir = round(self.initial_rotation / (pi/2)) # -2, -1, 0, 1, 2
+        # if dir == -2 or dir == 2:
+        #     x = x
+        #     y = y
+        # elif dir == -1:
+        #     x = x
+        #     y = y
+        if dir == 0: # moving up, inverted x
+            x = -x
+            # y = y
+        elif dir == 1: 
+            # x = x
+            y = -y
+
+        # rotate the 2d coordinates
+        # x = x * cos(orientation) - y * sin(orientation)
+        # y = x * sin(orientation) + y * cos(orientation)
+
+        # return the rounded coordinates + rounding error
+        cell = (round(x), round(y))
+        error = ((x - cell[0]) * self.cell_side_length, (y - cell[1]) * self.cell_side_length) 
+        euclidean_error = sqrt(error[0]**2 + error[1]**2)
+        return cell, euclidean_error
+
+
+    def get_pose_from_cell(self, cell: tuple):
+        """
+        Converts a given cell coordinate in the maze matrix to a 2D pose in the odometry frame.
+
+        Parameters
+        ----------
+        cell (tuple): A tuple (x, y) representing the cell coordinates in the maze matrix.
+
+        Returns
+        -------
+        pose2d (tuple): A tuple (x, y) representing the 2D pose in the odometry frame.
+        """
+        x = cell[0] * self.cell_side_length
+        y = cell[1] * self.cell_side_length
+        dir = round(self.initial_rotation / (pi/2)) # -2, -1, 0, 1, 2
+        if dir == 0:
+            x = -x
+        elif dir == 1:
+            y = -y
+        return (x, y)
 
     def handle_goal_reached_exploring(self):
         # compute the shortest path
@@ -646,11 +549,27 @@ class ControllerNode(Node):
 
         return smallest_neighbor
 
+    def euclidean_distance(self, goal_pose, current_pose):
+        """Euclidean distance between current pose and the goal."""
+        return sqrt(pow((goal_pose[0] - current_pose[0]), 2) +
+                    pow((goal_pose[1] - current_pose[1]), 2))
 
+    def angular_difference(self, goal_theta, current_theta):
+        """Compute shortest rotation from orientation current_theta to orientation goal_theta"""
+        return atan2(sin(goal_theta - current_theta), cos(goal_theta - current_theta))
 
+    def linear_vel(self, goal_pose, current_pose, constant=1.5):
+        """See video: https://www.youtube.com/watch?v=Qh15Nol5htM."""
+        return constant * self.euclidean_distance(goal_pose, current_pose)
 
+    def steering_angle(self, goal_pose, current_pose):
+        """See video: https://www.youtube.com/watch?v=Qh15Nol5htM."""
+        return atan2(goal_pose[1] - current_pose[1], goal_pose[0] - current_pose[0])
 
-
+    def angular_vel(self, goal_pose, current_pose, constant=6):
+        """See video: https://www.youtube.com/watch?v=Qh15Nol5htM."""
+        goal_theta = self.steering_angle(goal_pose, current_pose)
+        return constant * self.angular_difference(goal_theta, current_pose[2])
 
 
     def pose3d_to_2d(self, pose3):
