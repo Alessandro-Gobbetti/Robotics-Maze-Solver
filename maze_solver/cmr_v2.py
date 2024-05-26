@@ -163,8 +163,7 @@ class ControllerNode(Node):
         pose2d = self.pose3d_to_2d(self.odom_pose)
         # self.get_logger().info(f"Got Pose {pose2d}")
         self.current_pose = (pose2d[0], pose2d[1], pose2d[2])
-        # if self.use_odometry and self.target_orientation is not None:
-        #     pass
+
 
 
     def camera_callback(self, message):
@@ -251,8 +250,7 @@ class ControllerNode(Node):
             if self.current_callback_dependency == CallbackUsage.CAMERA:
                 # self.get_logger().info(f"No contours present. Wall blocking front view.")
                 self.stop()
-                # self.update_position()
-                # self.current_callback_dependency = CallbackUsage.CALC
+
                 self.prev_cell_contour = None
                 self.current_callback_dependency = CallbackUsage.MOVE_A_LITTLE_FORWARD
 
@@ -269,7 +267,6 @@ class ControllerNode(Node):
         if self.current_pose is not None:
             match(self.current_callback_dependency):
                 case CallbackUsage.CAMERA:
-                    # self.get_logger().info("Using camera to align")
                     pass
                 case CallbackUsage.CALC:
                     if self.floodfill_state == FloodFillState.REACH_GOAL and self.current_cell == self.goal:
@@ -321,64 +318,12 @@ class ControllerNode(Node):
                     match(self.cur_rot):
                         case RotationVal.NINETY_LEFT:
                             self.turn_ninety_left()
-                            # self.get_logger().info(f"Rotating 90 left.")
-                            # cmd_vel = Twist()
-                            # cmd_vel.angular.z = 2*self.rot_vel
-                            # cmd_vel.linear.x = 0.0
-                            # angle = np.pi/2 
-                            # time_in_secs = angle/self.rot_vel
-                            # if self.rotation_start_time is None:
-                            #     self.rotation_start_time = self.get_clock().now().seconds_nanoseconds()[0]
-                            # current_time = self.get_clock().now().seconds_nanoseconds()[0]
-                            # if current_time - self.rotation_start_time < time_in_secs:
-                            #     self.vel_publisher.publish(cmd_vel)
-                            # else:
-                            #     self.get_logger().info(f"Successfully Rotated 90 left. Stopping..")
-                            #     self.stop()
-                            #     self.current_callback_dependency = CallbackUsage.CAMERA
-                            #     self.rotation_start_time = None
-                            #     self.cur_rot = None
-
 
                         case RotationVal.NINETY_RIGHT:
                             self.turn_ninety_right()
-                            # self.get_logger().info(f"Rotating 90 right.")
-                            # cmd_vel = Twist()
-                            # cmd_vel.angular.z = -self.rot_vel*2
-                            # cmd_vel.linear.x = 0.0
-                            # angle = np.pi/2 
-                            # time_in_secs = angle/self.rot_vel
-                            # if self.rotation_start_time is None:
-                            #     self.rotation_start_time = self.get_clock().now().seconds_nanoseconds()[0]
-                            # current_time = self.get_clock().now().seconds_nanoseconds()[0]
-                            # if current_time - self.rotation_start_time < time_in_secs:
-                            #     self.vel_publisher.publish(cmd_vel)
-                            # else:
-                            #     self.get_logger().info(f"Successfully Rotated 90 right. Stopping..")
-                            #     self.stop()
-                            #     self.current_callback_dependency = CallbackUsage.CAMERA
-                            #     self.rotation_start_time = None
-                            #     self.cur_rot = None
 
                         case RotationVal.BACK:
                             self.turn_back()
-                            # self.get_logger().info(f"Rotating 180 back.")
-                            # cmd_vel = Twist()
-                            # cmd_vel.angular.z = self.rot_vel*2
-                            # cmd_vel.linear.x = 0.0
-                            # angle = np.pi
-                            # time_in_secs = angle/self.rot_vel
-                            # if self.rotation_start_time is None:
-                            #     self.rotation_start_time = self.get_clock().now().seconds_nanoseconds()[0]
-                            # current_time = self.get_clock().now().seconds_nanoseconds()[0]
-                            # if current_time - self.rotation_start_time < time_in_secs:
-                            #     self.vel_publisher.publish(cmd_vel)
-                            # else:
-                            #     self.get_logger().info(f"Successfully Rotated 180 back. Stopping..")
-                            #     self.stop()
-                            #     self.current_callback_dependency = CallbackUsage.CAMERA
-                            #     self.rotation_start_time = None
-                            #     self.cur_rot = None
 
                         case _:
                             self.get_logger().error(f"Invalid rotation value specified: {self.cur_rot}. Aborting")
@@ -411,7 +356,7 @@ class ControllerNode(Node):
     def turn_ninety_right(self):
         # self.get_logger().info(f"Turning RIGHT")
         cp = self.pose3d_to_2d(self.odom_pose)
-        ta = np.pi/2
+        ta = np.pi/2 + 0.2
         ca = cp[2]
         cmd_vel = Twist()
         if self.target_orientation is None:
@@ -434,7 +379,7 @@ class ControllerNode(Node):
     def turn_ninety_left(self):
         # self.get_logger().info(f"Turning LEFT")
         cp = self.pose3d_to_2d(self.odom_pose)
-        ta = np.pi/2
+        ta = np.pi/2 + 0.2
         ca = cp[2]
         cmd_vel = Twist()
         if self.target_orientation is None:
@@ -456,13 +401,16 @@ class ControllerNode(Node):
     def turn_back(self):
         # self.get_logger().info(f"Turning BACK")
         cp = self.pose3d_to_2d(self.odom_pose)
-        ta = np.pi
+        ta = np.pi + 0.4
         ca = cp[2]
         cmd_vel = Twist()
         if self.target_orientation is None:
-            self.target_orientation = (ca + ta)%(2*np.pi)
+            # self.target_orientation = (ca + ta)%(2*np.pi)
+            self.target_orientation = ca + ta
+            # if self.target_orientation > np.pi:
+            #     self.target_orientation -= 2*np.pi
         # self.get_logger().info(f"The target {self.target_orientation}, ca = {ca}")
-        # self.get_logger().info(f"ad: {self.angular_difference(self.target_orientation, ca)}")
+        self.get_logger().info(f"ad: {self.angular_difference(self.target_orientation, ca)}")
         # if np.abs(self.target_orientation - ca) < self.angular_threshold:
         if np.abs(self.angular_difference(self.target_orientation, ca)) < self.angular_threshold:
             self.stop()
@@ -635,11 +583,28 @@ class ControllerNode(Node):
     def detect_walls(self):
         # walls_robot = WallState((int(0<self.proximities['left']<0.1), int(self.proximities['center']>0), int(0<self.proximities['right']<0.1), int(self.proximities['left_back']>0 and self.proximities['right_back']>0)))
         walls_robot = self.check_walls()
+        walls = WallState(self.rotate(walls_robot.value, self.initial_rotation))
+        angle = 0
+        match(self.orientation):
+            case Position.DOWN:
+                pass
+            case Position.UP:
+                angle = np.pi
+            case Position.LEFT:
+                angle = -np.pi/2
+            case Position.RIGHT:
+                angle = np.pi/2
+            case _:
+                self.get_logger().error(f"Aborting, wrong angle")
+                exit(1)
+        # self.wall_state_global = WallState(self.rotate(walls.value, self.current_pose[2]))
+        self.wall_state_global = WallState(self.rotate(walls.value, angle))
         self.get_logger().info(f"WALLS: {walls_robot}")
         self.get_logger().info(f"WALLS: {self.proximities}")
-        walls = WallState(self.rotate(walls_robot.value, self.initial_rotation))
-        self.wall_state_global = WallState(self.rotate(walls.value, self.current_pose[2]))
-        
+        self.get_logger().info(f"Wall Global: {self.wall_state_global}")
+        self.get_logger().info(f"WALLS: {walls}")
+        self.get_logger().info(f"Current Movement Global: {self.orientation}")
+        self.get_logger().info(f"Current Pose: {self.current_pose}")
         old_neighbors = self.maze_matrix[self.current_cell[0]][self.current_cell[1]]
         new_neighbors = [n if not w else None for n, w in zip(self.maze_matrix[self.current_cell[0]][self.current_cell[1]], self.wall_state_global.value)]
         # remove current cell as neighbor for all the removed neighbors
