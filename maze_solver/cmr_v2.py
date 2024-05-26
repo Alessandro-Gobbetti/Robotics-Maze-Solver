@@ -1,29 +1,16 @@
 import rclpy
 from rclpy.node import Node
-import tf_transformations
 import numpy as np
 from collections import deque
-from enum import Enum
 import sys
-
-from geometry_msgs.msg import Twist, Pose
-from nav_msgs.msg import Odometry
+from geometry_msgs.msg import Twist
 from sensor_msgs.msg import Range, Image
 from math import pi, sqrt, atan2, sin, cos
 import cv2
 from cv_bridge import CvBridge
-
-class Print:
-    """
-    This class simply the printing of colored text in the terminal.
-    """
-    RED = '\033[91m'
-    GREEN = '\033[92m'
-    BLUE = '\033[94m'
-    YELLOW = '\033[93m'
-    UNDERLINE = '\033[4m'
-    END = '\033[0m'
-
+import tf_transformations
+from nav_msgs.msg import Odometry
+from enum import Enum
 
 class WallState(Enum):
     #(WEST, NORTH, EAST, SOUTH)
@@ -61,55 +48,54 @@ class ThymioState(Enum):
     DONE = 4
 
 class Position(Enum):
-    NORTH = 1
-    EAST = 2
-    WEST = 3
-    SOUTH = 4
+    UP = 1
+    RIGHT = 2
+    LEFT = 3
+    DOWN = 4
 
 class CallbackUsage(Enum):
     CAMERA = 1
-    ODOM = 2
+    ROT = 2
     CALC = 3
+    MOVE_A_LITTLE_FORWARD = 4
+
+class RotationVal(Enum):
+    NINETY_LEFT = 1
+    NINETY_RIGHT = 2
+    BACK = 3
+
+class Print:
+    """
+    This class simply the printing of colored text in the terminal.
+    """
+    RED = '\033[91m'
+    GREEN = '\033[92m'
+    BLUE = '\033[94m'
+    YELLOW = '\033[93m'
+    UNDERLINE = '\033[4m'
+    END = '\033[0m'
 
 
 class ControllerNode(Node):
     def __init__(self):
         super().__init__('controller_node')
-
-
-        self.max_speed = 0.04
-        self.max_angular_speed = 0.4
-
-        self.odom_pose = None
-        self.odom_velocity = None
-        self.pose2d = None
-        self.prev_cell_odom_pose = None
-        self.start_pose = None
         self.current_pose = None
-        # self.wall_state_robot = None
         self.wall_state_global = None
-        self.distance_to_wall = None
-        self.walls_threshold = 0.01
         self.is_rotation_needed = False
-
         self.floodfill_state = FloodFillState.REACH_GOAL
         self.explored = []
         self.best_paths = []
         self.best_path = None
         self.next_cell = None
-        self.rotating = False
-        self.going_to_next_cell = False
-        # Create attributes to store odometry pose and velocity
+        self.current_pose = None
         self.odom_pose = None
-        self.odom_velocity = None
+
+        self.odom_subscriber = self.create_subscription(Odometry, 'odom', self.odom_callback, 10)
+
                 
         # Create a publisher for the topic 'cmd_vel'
         self.vel_publisher = self.create_publisher(Twist, 'cmd_vel', 10)
-
-        # Create a subscriber to the topic 'odom', which will call 
-        # self.odom_callback every time a message is received
-        self.odom_subscriber = self.create_subscription(Odometry, 'odom', self.odom_callback, 10)
-        
+            
         # Creating an image subscriber:
         self.camera = self.create_subscription(Image, 'camera', self.camera_callback, 10)
         self.bridge = CvBridge()
@@ -120,19 +106,16 @@ class ControllerNode(Node):
         self.goal = (7, 0)
         self.start = (0, 0)
         self.flood_matrix = self.create_flood_matrix(self.dim, self.goal)
-       
+        self.current_cell = self.start
         # the maze array is a 2d array: each entry is a list of neighbors
         self.maze_matrix = self.create_maze_matrix(self.dim)
         
         
         self.READY = False
-        self.is_stopped = False
         
         self.angular_threshold = 0.01 # Defines the threshold for the differ
+        self.orientation = Position.DOWN
 
-        self.distance_tolerance = 0.02
-        self.current_cell = (0,0)
-        self.move_dir = Position.SOUTH
         self.proximities = {
             'left': -1,
             'center_left': -1,
@@ -150,10 +133,21 @@ class ControllerNode(Node):
         self.prox_center_right = self.create_subscription(Range, 'proximity/center_right', lambda message: self.proximity_callback(message, "center_right"), 10)
         self.prox_left_back= self.create_subscription(Range, 'proximity/rear_left', lambda message: self.proximity_callback(message, "left_back"), 10)
         self.prox_right_back = self.create_subscription(Range, 'proximity/rear_right', lambda message: self.proximity_callback(message, "right_back"), 10)
-        self.current_callback_dependency = CallbackUsage.CAMERA
+        self.current_callback_dependency = CallbackUsage.CALC
         self.aligned = False
-        self.centred = False
-    
+        self.rotation_start_time = None
+        # self.expected_rot_time_end = None
+        self.cur_rot = None # Stores the enum value of how much we need to rotate by.
+        self.rot_vel = 0.2 # This is the angular velocity which will help the robot to rotate around its axis
+        self.prev_cell_contour = None   # Stores contour center
+        self.start_pose = None
+        self.distance_threshold = 0.05
+        self.distance_travel_by_itself = 0.08
+        self.target_orientation = None
+        # self.use_odometry = False
+        self.angular_threshold = 0.01
+        self.area_threshold = 1000
+
     def run(self):
         # Create and immediately start a timer that will regularly publish commands
         self.timer = self.create_timer(1/60, self.move)
@@ -162,6 +156,16 @@ class ControllerNode(Node):
         # Set all velocities to zero
         cmd_vel = Twist()
         self.vel_publisher.publish(cmd_vel)
+
+
+    def odom_callback(self, msg):
+        self.odom_pose = msg.pose.pose
+        pose2d = self.pose3d_to_2d(self.odom_pose)
+        # self.get_logger().info(f"Got Pose {pose2d}")
+        self.current_pose = (pose2d[0], pose2d[1], pose2d[2])
+        # if self.use_odometry and self.target_orientation is not None:
+        #     pass
+
 
     def camera_callback(self, message):
         # Convert ROS Image message to OpenCV image
@@ -183,6 +187,8 @@ class ControllerNode(Node):
         if contours:
             # Find the largest contour
             largest_contour = max(contours, key=cv2.contourArea)
+            area = cv2.contourArea(largest_contour)
+            #self.get_logger().info(f"Area: {area}")
 
             # Get the bounding box of the largest contour
             x, y, w, h = cv2.boundingRect(largest_contour)
@@ -195,46 +201,60 @@ class ControllerNode(Node):
             image_center_x = cv_image.shape[1] / 2
             image_center_y = cv_image.shape[0] / 2
 
-            if self.current_callback_dependency == CallbackUsage.CAMERA:
+            if self.current_callback_dependency == CallbackUsage.CAMERA and area > self.area_threshold:
 
                 offset_x = square_center_x - image_center_x
-                offset_y = square_center_y - image_center_y
-
+                # offset_y = square_center_y - image_center_y
+                #self.get_logger().info(f"Current Offsets x:{offset_x}, y:{offset_y}")
 
                 # Command to align the robot with the red square
                 cmd_vel = Twist()
-
-                if not self.aligned:
                     # Adjust angular velocity to align with the red square
-                    if abs(offset_x) > 10:  # Threshold to avoid small jitters
-                        cmd_vel.angular.z = -0.002 * offset_x  # Adjust turning speed
-                    else:
-                        self.aligned = True  # Aligned when x offset is within the threshold
-                        cmd_vel.angular.z = 0
-
-                    cmd_vel.linear.x = 0  # Stop forward movement until aligned
+                if abs(offset_x) > 0.5:  # Threshold to avoid small jitters
+                    #self.get_logger().info(f"Adjusting Angle, current offset x:{offset_x}, square_c_x: {square_center_x}, image_c_x: {image_center_x}")
+                    self.aligned = False
+                    cmd_vel.angular.z = -0.03 * offset_x  # Adjust turning speed
+                    # self.prev_cell_contour = None
+                    # self.vel_publisher.publish(cmd_vel)
                 else:
-                    if abs(offset_y) > 10:
-                        self.centered = False
-                        # Move towards the square
-                        if abs(offset_y) > 10:  # Threshold to avoid small jitters
-                            cmd_vel.linear.x = -0.002 * offset_y  # Adjust forward speed
-                        else:
-                            self.centered = True
-                            cmd_vel.linear.x = 0
-                            self.aligned = False  # Reset aligned for the next movement
-                    else:
-                        # The robot is centered
-                        self.centered = True
-                        cmd_vel.linear.x = 0
-                        cmd_vel.angular.z = 0
-                        self.current_callback_dependency = CallbackUsage.CALC
-                self.vel_publisher.publish(cmd_vel)
+                    # self.aligned = True  # Aligned when x offset is within the threshold
+                    cmd_vel.angular.z = 0.0
 
-            # Draw the bounding box and center on the image
+                # if self.aligned:
+                cmd_vel.linear.x = 0.03
+                # self.get_logger().info("Moving to the centre of the next cell")
+                if self.prev_cell_contour is None:
+                    # self.get_logger().info(f"Setting pcc: x: {square_center_x}, y: {square_center_y}")
+                    self.prev_cell_contour = (square_center_x, square_center_y)
+                # self.get_logger().info(f"cx: {square_center_x}, cy: {square_center_y}, pcx: {self.prev_cell_contour[0]}, pcy: {self.prev_cell_contour[1]}")
+                movement_threshold = 50
+                if (abs(square_center_x - self.prev_cell_contour[0]) > movement_threshold or
+                    abs(square_center_y - self.prev_cell_contour[1]) > movement_threshold):
+                    # self.get_logger().info(f"Got Sudden cell change, stopping and updating")
+                    # self.get_logger().info(f"Current contour and prev contour centers:")
+                    # self.get_logger().info(f"cx: {square_center_x}, cy: {square_center_y}, pcx: {self.prev_cell_contour[0]}, pcy: {self.prev_cell_contour[1]}")
+                    self.stop()
+                    # self.update_position()
+                    self.prev_cell_contour = None
+                    self.current_callback_dependency = CallbackUsage.MOVE_A_LITTLE_FORWARD
+                    # self.current_callback_dependency = CallbackUsage.CALC
+                else:
+                    self.vel_publisher.publish(cmd_vel)
+                    self.prev_cell_contour = (square_center_x, square_center_y)
+            
+
+            #Draw the bounding box and center on the image
             cv2.rectangle(cv_image, (x, y), (x + w, y + h), (0, 255, 0), 2)
             cv2.circle(cv_image, (int(square_center_x), int(square_center_y)), 5, (255, 0, 0), -1)
             cv2.circle(cv_image, (int(image_center_x), int(image_center_y)), 5, (0, 255, 255), -1)
+        else:
+            if self.current_callback_dependency == CallbackUsage.CAMERA:
+                # self.get_logger().info(f"No contours present. Wall blocking front view.")
+                self.stop()
+                # self.update_position()
+                # self.current_callback_dependency = CallbackUsage.CALC
+                self.prev_cell_contour = None
+                self.current_callback_dependency = CallbackUsage.MOVE_A_LITTLE_FORWARD
 
         # Convert the processed image and mask back to ROS Image messages
         processed_image_msg = self.bridge.cv2_to_imgmsg(cv_image, encoding='rgb8')
@@ -246,25 +266,313 @@ class ControllerNode(Node):
     # main loop
         
     def move(self):
-        if self.current_callback_dependency == CallbackUsage.CAMERA:
-            self.get_logger().info("Using camera to align")
-        elif self.current_callback_dependency == CallbackUsage.ODOM:
-            self.get_logger().info("Using Odometry to align")
-        elif self.current_callback_dependency == CallbackUsage.CALC:
-            self.detect_walls()
-            self.next_cell = self.floodfill_step()
-            ###...
-            
+        if self.current_pose is not None:
+            match(self.current_callback_dependency):
+                case CallbackUsage.CAMERA:
+                    # self.get_logger().info("Using camera to align")
+                    pass
+                case CallbackUsage.CALC:
+                    if self.floodfill_state == FloodFillState.REACH_GOAL and self.current_cell == self.goal:
+                        self.handle_goal_reached_exploring()
+
+                    if self.floodfill_state == FloodFillState.REACH_START and self.current_cell == self.start:
+                        self.handle_start_reached_exploring()
+                        
+                    if self.floodfill_state == FloodFillState.SPRINT and self.current_cell == self.goal:
+                        self.handle_goal_reached_sprinting()
+
+                    # we are in the center of the cell
+                    if self.floodfill_state == FloodFillState.REACH_GOAL or self.floodfill_state == FloodFillState.REACH_START:
+                        self.detect_walls()
+                        self.next_cell = self.floodfill_step()
+                        
+                        # compute if we first need to rotate in place
+                        need_rotation = self.check_rotation_need()
+                        if need_rotation:
+                            self.get_logger().info(f"In need of rotation")
+                            self.current_callback_dependency = CallbackUsage.ROT    # We go to the state where we rotate the robot
+                        else:   
+                            self.get_logger().info(f"No need of rotation. Handing to camera")
+                            self.current_callback_dependency = CallbackUsage.CAMERA # Else we just move the robot forward
+
+                        self.get_logger().info(f"Next Cell: {self.next_cell}, is_rotation_needed: {need_rotation}")
+                    elif self.floodfill_state == FloodFillState.SPRINT:
+                        if self.best_path:
+                            self.next_cell = self.best_path.pop(0)
+                            # compute if we first need to rotate in place
+                            need_rotation = self.check_rotation_need()
+                            if need_rotation:
+                                self.get_logger().info(f"In need of rotation")
+                                self.current_callback_dependency = CallbackUsage.ROT    # We go to the state where we rotate the robot
+                            else:   
+                                self.get_logger().info(f"No need of rotation. Handing to camera")
+                                self.current_callback_dependency = CallbackUsage.CAMERA # Else we just move the robot forward
+
+                            self.get_logger().info(f"Next Cell: {self.next_cell}, is_rotation_needed: {need_rotation}")
+                        else:
+                            self.stop()
+                            self.get_logger().info("Done.")
+
+                case CallbackUsage.ROT:
+                    if self.cur_rot is None or self.orientation is None:
+                        self.get_logger().error(f"No rotation or orientation specified. Quitting..")
+                        self.stop()
+                        exit(1)
+                    match(self.cur_rot):
+                        case RotationVal.NINETY_LEFT:
+                            self.turn_ninety_left()
+                            # self.get_logger().info(f"Rotating 90 left.")
+                            # cmd_vel = Twist()
+                            # cmd_vel.angular.z = 2*self.rot_vel
+                            # cmd_vel.linear.x = 0.0
+                            # angle = np.pi/2 
+                            # time_in_secs = angle/self.rot_vel
+                            # if self.rotation_start_time is None:
+                            #     self.rotation_start_time = self.get_clock().now().seconds_nanoseconds()[0]
+                            # current_time = self.get_clock().now().seconds_nanoseconds()[0]
+                            # if current_time - self.rotation_start_time < time_in_secs:
+                            #     self.vel_publisher.publish(cmd_vel)
+                            # else:
+                            #     self.get_logger().info(f"Successfully Rotated 90 left. Stopping..")
+                            #     self.stop()
+                            #     self.current_callback_dependency = CallbackUsage.CAMERA
+                            #     self.rotation_start_time = None
+                            #     self.cur_rot = None
+
+
+                        case RotationVal.NINETY_RIGHT:
+                            self.turn_ninety_right()
+                            # self.get_logger().info(f"Rotating 90 right.")
+                            # cmd_vel = Twist()
+                            # cmd_vel.angular.z = -self.rot_vel*2
+                            # cmd_vel.linear.x = 0.0
+                            # angle = np.pi/2 
+                            # time_in_secs = angle/self.rot_vel
+                            # if self.rotation_start_time is None:
+                            #     self.rotation_start_time = self.get_clock().now().seconds_nanoseconds()[0]
+                            # current_time = self.get_clock().now().seconds_nanoseconds()[0]
+                            # if current_time - self.rotation_start_time < time_in_secs:
+                            #     self.vel_publisher.publish(cmd_vel)
+                            # else:
+                            #     self.get_logger().info(f"Successfully Rotated 90 right. Stopping..")
+                            #     self.stop()
+                            #     self.current_callback_dependency = CallbackUsage.CAMERA
+                            #     self.rotation_start_time = None
+                            #     self.cur_rot = None
+
+                        case RotationVal.BACK:
+                            self.turn_back()
+                            # self.get_logger().info(f"Rotating 180 back.")
+                            # cmd_vel = Twist()
+                            # cmd_vel.angular.z = self.rot_vel*2
+                            # cmd_vel.linear.x = 0.0
+                            # angle = np.pi
+                            # time_in_secs = angle/self.rot_vel
+                            # if self.rotation_start_time is None:
+                            #     self.rotation_start_time = self.get_clock().now().seconds_nanoseconds()[0]
+                            # current_time = self.get_clock().now().seconds_nanoseconds()[0]
+                            # if current_time - self.rotation_start_time < time_in_secs:
+                            #     self.vel_publisher.publish(cmd_vel)
+                            # else:
+                            #     self.get_logger().info(f"Successfully Rotated 180 back. Stopping..")
+                            #     self.stop()
+                            #     self.current_callback_dependency = CallbackUsage.CAMERA
+                            #     self.rotation_start_time = None
+                            #     self.cur_rot = None
+
+                        case _:
+                            self.get_logger().error(f"Invalid rotation value specified: {self.cur_rot}. Aborting")
+                            self.stop()
+                            exit(1)
+
+                case CallbackUsage.MOVE_A_LITTLE_FORWARD:
+                    cmd_vel = Twist()
+                    cmd_vel.linear.x = 0.1
+                    # self.get_logger().info("Moving a bit forward by itself")
+                    if self.start_pose is None: 
+                        self.start_pose = self.current_pose
+                    if self.euclidean_distance(self.start_pose, self.current_pose) > self.distance_travel_by_itself or (self.proximities['center'] != -1.0 and self.proximities['center'] < self.distance_threshold):
+                        # self.get_logger().info("Travelled or encountered a wall in the front")
+                        cmd_vel.linear.x = 0.0
+                        self.update_position()
+                        # self.get_logger().info("Position Updated")
+                        self.current_callback_dependency = CallbackUsage.CALC
+                        self.start_pose = None  # Setting it none for the next iteration.
+                    self.vel_publisher.publish(cmd_vel)
+
+                case _:
+                    self.get_logger().error(f"No case matched. Please start execution again...")
+                    self.stop()
+                    exit(1)
+        else:
+            self.get_logger().info("Waiting for odometry to setup")
+
+
+    def turn_ninety_right(self):
+        # self.get_logger().info(f"Turning RIGHT")
+        cp = self.pose3d_to_2d(self.odom_pose)
+        ta = np.pi/2
+        ca = cp[2]
+        cmd_vel = Twist()
+        if self.target_orientation is None:
+            self.target_orientation = (ca - ta)%(2*np.pi)
+        # self.get_logger().info(f"The target {self.target_orientation}, ca = {ca}")
+        # self.get_logger().info(f"ad: {self.angular_difference(self.target_orientation, ca)}")
+        # if np.abs(self.target_orientation - ca) < self.angular_threshold:
+        if np.abs(self.angular_difference(self.target_orientation, ca)) < self.angular_threshold:
+        
+            self.stop()
+            self.get_logger().info(f"Successfully Rotated 90 right. Stopping..")
+            self.cur_rot = None
+            self.target_orientation = None
+            self.current_callback_dependency = CallbackUsage.CAMERA
+        else:
+            cmd_vel.angular.z = -0.3
+            self.vel_publisher.publish(cmd_vel)
+        
+        
+    def turn_ninety_left(self):
+        # self.get_logger().info(f"Turning LEFT")
+        cp = self.pose3d_to_2d(self.odom_pose)
+        ta = np.pi/2
+        ca = cp[2]
+        cmd_vel = Twist()
+        if self.target_orientation is None:
+            self.target_orientation = (ca + ta)%(2*np.pi)
+        # self.get_logger().info(f"The target {self.target_orientation}, ca = {ca}")
+        # self.get_logger().info(f"ad: {self.angular_difference(self.target_orientation, ca)}")
+        # if np.abs(self.target_orientation - ca) < self.angular_threshold:
+        if np.abs(self.angular_difference(self.target_orientation, ca)) < self.angular_threshold:
+        
+            self.stop()
+            self.get_logger().info(f"Successfully Rotated 90 Left. Stopping..")
+            self.cur_rot = None
+            self.target_orientation = None
+            self.current_callback_dependency = CallbackUsage.CAMERA
+        else:
+            cmd_vel.angular.z = 0.3
+            self.vel_publisher.publish(cmd_vel)
+
+    def turn_back(self):
+        # self.get_logger().info(f"Turning BACK")
+        cp = self.pose3d_to_2d(self.odom_pose)
+        ta = np.pi
+        ca = cp[2]
+        cmd_vel = Twist()
+        if self.target_orientation is None:
+            self.target_orientation = (ca + ta)%(2*np.pi)
+        # self.get_logger().info(f"The target {self.target_orientation}, ca = {ca}")
+        # self.get_logger().info(f"ad: {self.angular_difference(self.target_orientation, ca)}")
+        # if np.abs(self.target_orientation - ca) < self.angular_threshold:
+        if np.abs(self.angular_difference(self.target_orientation, ca)) < self.angular_threshold:
+            self.stop()
+            self.get_logger().info(f"Successfully Rotated 180 Back. Stopping..")
+            self.cur_rot = None
+            self.target_orientation = None
+            self.current_callback_dependency = CallbackUsage.CAMERA
+        else:
+            cmd_vel.angular.z = 0.3
+            self.vel_publisher.publish(cmd_vel)
+
+
     def update_position(self):
-        if self.orientation == Position.SOUTH:
-            self.current_cell = (self.current_cell[0], self.current_cell[1] + 1)
-        elif self.orientation == Position.WEST:
+        if self.orientation == Position.DOWN:
             self.current_cell = (self.current_cell[0] + 1, self.current_cell[1])
-        elif self.orientation == Position.NORTH:
-            self.current_cell = (self.current_cell[0], self.current_cell[1] - 1)
-        elif self.orientation == Position.EAST:
+        elif self.orientation == Position.RIGHT:
+            self.current_cell = (self.current_cell[0], self.current_cell[1] + 1)
+        elif self.orientation == Position.UP:
             self.current_cell = (self.current_cell[0] - 1, self.current_cell[1])
+        elif self.orientation == Position.LEFT:
+            self.current_cell = (self.current_cell[0], self.current_cell[1] - 1)
         self.get_logger().info(f"Moved to cell: {self.current_cell}")
+
+    def check_rotation_need(self):
+        x1, y1 = self.current_cell
+        x2, y2 = self.next_cell
+
+        match(self.orientation):
+            case Position.DOWN:
+                if x1 < x2 and y1 == y2:
+                    return False
+                elif x1 > x2 and y1 == y2:
+                    self.cur_rot = RotationVal.BACK
+                    self.orientation = Position.UP
+                    return True
+                elif x1 == x2 and y1 < y2:
+                    self.cur_rot = RotationVal.NINETY_LEFT
+                    self.orientation = Position.RIGHT
+                    return True
+                elif x1 == x2 and y1 > y2:
+                    self.cur_rot = RotationVal.NINETY_RIGHT
+                    self.orientation = Position.LEFT
+                    return True
+                else:
+                    self.get_logger().error(f"Not a valid next cell value. Restart...")
+                    self.stop()
+                    exit(1)
+            case Position.UP:
+                if x1 < x2 and y1 == y2:
+                    self.cur_rot = RotationVal.BACK
+                    self.orientation = Position.DOWN
+                    return True
+                elif x1 > x2 and y1 == y2:
+                    return False
+                elif x1 == x2 and y1 < y2:
+                    self.cur_rot = RotationVal.NINETY_RIGHT
+                    self.orientation = Position.RIGHT
+                    return True
+                elif x1 == x2 and y1 > y2:
+                    self.cur_rot = RotationVal.NINETY_LEFT
+                    self.orientation = Position.LEFT
+                    return True
+                else:
+                    self.get_logger().error(f"Not a valid next cell value. Restart...")
+                    self.stop()
+                    exit(1)
+            case Position.LEFT:
+                if x1 < x2 and y1 == y2:
+                    self.cur_rot = RotationVal.NINETY_LEFT
+                    self.orientation = Position.DOWN
+                    return True
+                elif x1 > x2 and y1 == y2:
+                    self.cur_rot = RotationVal.NINETY_RIGHT
+                    self.orientation = Position.UP
+                    return True
+                elif x1 == x2 and y1 < y2:
+                    self.cur_rot = RotationVal.BACK
+                    self.orientation = Position.RIGHT
+                    return True
+                elif x1 == x2 and y1 > y2:
+                    return False
+                else:
+                    self.get_logger().error(f"Not a valid next cell value. Restart...")
+                    self.stop()
+                    exit(1)
+            case Position.RIGHT:
+                if x1 < x2 and y1 == y2:
+                    self.cur_rot = RotationVal.NINETY_RIGHT
+                    self.orientation = Position.DOWN
+                    return True
+                elif x1 > x2 and y1 == y2:
+                    self.cur_rot = RotationVal.NINETY_LEFT
+                    self.orientation = Position.UP
+                    return True
+                elif x1 == x2 and y1 < y2:
+                    return False
+                elif x1 == x2 and y1 > y2:
+                    self.cur_rot = RotationVal.BACK
+                    self.orientation = Position.LEFT
+                    return True
+                else:
+                    self.get_logger().error(f"Not a valid next cell value. Restart...")
+                    self.stop()
+                    exit(1)
+            case _:
+                self.get_logger().error(f"Got Invalid Position for rotation check. Exiting")
+                self.stop()
+                exit(1)
+        
+
     # --------------------------------------------------------------------------------------------
     # Callback functions
 
@@ -272,128 +580,11 @@ class ControllerNode(Node):
         self.READY = True
         self.proximities[which] = message.range # Updating the dict values with the current proximity value 
     
-    def odom_callback(self, msg):
-        self.odom_pose = msg.pose.pose
-        self.odom_valocity = msg.twist.twist
-        pose2d = self.pose3d_to_2d(self.odom_pose)
-        # self.get_logger().info(f"Got Pose {pose2d}")
-        self.current_pose = (pose2d[0], pose2d[1], pose2d[2])
-
-        if not self.READY:
-            return
-        
-        is_start = False
-        if self.start_pose is None:
-            is_start = True
-            self.start_pose = (pose2d[0], pose2d[1], pose2d[2])
-
-        current_cell, error = self.get_cell_from_pose(self.current_pose)
-        if is_start or (error < self.distance_tolerance and current_cell != self.current_cell): # or  0 < self.proximities['center'] < 0.05
-            self.get_logger().info(f"Current Cell: {current_cell}, Error: {error}, Pose: {self.current_pose}, Pose: {self.get_pose_from_cell(current_cell)}")
-            self.current_cell = current_cell
-
-            if self.floodfill_state == FloodFillState.REACH_GOAL and self.current_cell == self.goal :
-                self.handle_goal_reached_exploring()
-
-            if self.floodfill_state == FloodFillState.REACH_START and self.current_cell == self.start:
-                self.handle_start_reached_exploiting()
-                
-            if self.floodfill_state == FloodFillState.SPRINT and self.current_cell == self.goal:
-                self.handle_goal_reached_sprinting()
-
-            # we are in the center of the cell
-            if self.floodfill_state == FloodFillState.REACH_GOAL or self.floodfill_state == FloodFillState.REACH_START:
-                self.detect_walls()
-                self.next_cell = self.floodfill_step()
-                
-                # compute if we first need to rotate in place
-                goal_pose = self.get_pose_from_cell(self.next_cell)
-                goal_theta = self.steering_angle(goal_pose, self.current_pose)
-                self.is_rotation_needed = abs(self.angular_difference(goal_theta, self.current_pose[2])) >= self.angular_threshold
-
-                self.get_logger().info(f"Next Cell: {self.next_cell}, is_rotation_needed: {self.is_rotation_needed}")
-            elif self.floodfill_state == FloodFillState.SPRINT:
-                if self.best_path:
-                    self.next_cell = self.best_path.popLeft()
-                    # compute if we first need to rotate in place
-                    goal_pose = self.get_pose_from_cell(self.next_cell)
-                    goal_theta = self.steering_angle(goal_pose, self.current_pose)
-                    self.is_rotation_needed = abs(self.angular_difference(goal_theta, self.current_pose[2])) >= self.angular_threshold
-
-                    self.get_logger().info(f"Next Cell: {self.next_cell}")
-                else:
-                    self.stop()
-                    self.get_logger().info("Done.")
-
-
-    def get_cell_from_pose(self, pose2d: tuple):
-        """
-        This function converts a given 2D pose in the odometry frame to cell coordinates in the maze matrix.
-        It also computes the error in this conversion. If the error is 0.0, it means the robot is exactly at the center of the cell.
-        The conversion depends on the initial rotation of the robot.
-
-        Parameters
-        ----------
-        pose2d (tuple): A tuple (x, y) representing the 2D pose in the odometry frame.
-
-        Returns
-        -------
-        cell (tuple): A tuple (x, y) representing the cell coordinates in the grid map.
-        euclidean_error (float): The Euclidean distance between the actual pose and the center of the cell.
-        """
-
-        x = (pose2d[0] / self.cell_side_length) + self.start[0]
-        y = (pose2d[1] / self.cell_side_length) + self.start[1]
-
-        dir = round(self.initial_rotation / (pi/2)) # -2, -1, 0, 1, 2
-        # if dir == -2 or dir == 2:
-        #     x = x
-        #     y = y
-        # elif dir == -1:
-        #     x = x
-        #     y = y
-        if dir == 0: # moving up, inverted x
-            x = -x
-            # y = y
-        elif dir == 1: 
-            # x = x
-            y = -y
-
-        # rotate the 2d coordinates
-        # x = x * cos(orientation) - y * sin(orientation)
-        # y = x * sin(orientation) + y * cos(orientation)
-
-        # return the rounded coordinates + rounding error
-        cell = (round(x), round(y))
-        error = ((x - cell[0]) * self.cell_side_length, (y - cell[1]) * self.cell_side_length) 
-        euclidean_error = sqrt(error[0]**2 + error[1]**2)
-        return cell, euclidean_error
-
-
-    def get_pose_from_cell(self, cell: tuple):
-        """
-        Converts a given cell coordinate in the maze matrix to a 2D pose in the odometry frame.
-
-        Parameters
-        ----------
-        cell (tuple): A tuple (x, y) representing the cell coordinates in the maze matrix.
-
-        Returns
-        -------
-        pose2d (tuple): A tuple (x, y) representing the 2D pose in the odometry frame.
-        """
-        x = cell[0] * self.cell_side_length
-        y = cell[1] * self.cell_side_length
-        dir = round(self.initial_rotation / (pi/2)) # -2, -1, 0, 1, 2
-        if dir == 0:
-            x = -x
-        elif dir == 1:
-            y = -y
-        return (x, y)
-
     def handle_goal_reached_exploring(self):
         # compute the shortest path
-        shortest_path, length = self.find_shortest_path(self.explored)
+        explored = self.explored
+        explored.append(self.current_cell)
+        shortest_path, length = self.find_shortest_path(explored)
         self.best_paths.append(shortest_path)
         self.get_logger().info(f"Shortest Path: {shortest_path} with length {length}")
 
@@ -403,13 +594,15 @@ class ControllerNode(Node):
         self.floodfill_state = FloodFillState.REACH_START
         self.get_logger().info("Goal reached. Returning to start.")
 
-    def handle_start_reached_exploiting(self):
+    def handle_start_reached_exploring(self):
         # extract the path from goal to start form the explored list
         # find the goal node and split the list
-        goal_index = self.explored.index(self.goal)
-        explored = self.explored[:goal_index+1]
-        self.get_logger().info(f"Explored: {self.explored}, Goal Index: {goal_index}, Explored: {explored})")
-        explored.reverse()
+        explored = self.explored + [self.current_cell]
+        goal_index = explored.index(self.goal)
+        explored = explored[goal_index:]
+        self.get_logger().info(f"Explored: {self.explored}, Goal Index: {goal_index}, Explored now: {explored})")
+        # reverse the list
+        explored = explored[::-1]
 
         # compute the shortest path
         shortest_path, length = self.find_shortest_path(explored)
@@ -418,6 +611,8 @@ class ControllerNode(Node):
         
         if len(self.best_paths) > 1:
             self.get_logger().info("Multiple paths found. Deciding the best path...")
+            for i, path in enumerate(self.best_paths):
+                self.get_logger().info(f"Path {i}: {path}, Length: {len(path)}")
             self.best_path = min(self.best_paths, key=lambda x: len(x))
         else:
             self.best_path = self.best_paths[0]
@@ -463,10 +658,6 @@ class ControllerNode(Node):
         angle_pi = round(angle_pi/(pi/2)) % 4
         return vec[angle_pi:] + vec[:angle_pi]
         
-
-
-    # TODO: floodfill algorithm
-
     # --------------------------------------------------------------------------------------------
     # Helper functions
     def create_flood_matrix(self, dim, goal):
@@ -493,9 +684,6 @@ class ControllerNode(Node):
         min_value = min([flood_array[n[0]][n[1]] for n in neighbors if n])
         return [n for n in neighbors if n and flood_array[n[0]][n[1]] == min_value], min_value
 
-
-
-
     def floodfill_step(self):
         """
         @return: the next cell to move to
@@ -509,12 +697,14 @@ class ControllerNode(Node):
         # if current smaller than all neighbors, floodfill the neighbors
         if self.flood_matrix[self.current_cell[0]][self.current_cell[1]] < smallest_neighbor_value:
             queue.append(self.current_cell)
-            max_iters = 100
+            max_iters = 1000
             iters = 0
 
             while not len(queue) == 0:
                 iters += 1
                 if iters > max_iters:
+                    self.get_logger().error("The Maze is not solvable.")
+                    self.stop()
                     exit()
 
                 # TODO: detect the case in which the maze is not solvable
@@ -558,37 +748,10 @@ class ControllerNode(Node):
         """Compute shortest rotation from orientation current_theta to orientation goal_theta"""
         return atan2(sin(goal_theta - current_theta), cos(goal_theta - current_theta))
 
-    def linear_vel(self, goal_pose, current_pose, constant=1.5):
-        """See video: https://www.youtube.com/watch?v=Qh15Nol5htM."""
-        return constant * self.euclidean_distance(goal_pose, current_pose)
-
     def steering_angle(self, goal_pose, current_pose):
         """See video: https://www.youtube.com/watch?v=Qh15Nol5htM."""
         return atan2(goal_pose[1] - current_pose[1], goal_pose[0] - current_pose[0])
 
-    def angular_vel(self, goal_pose, current_pose, constant=6):
-        """See video: https://www.youtube.com/watch?v=Qh15Nol5htM."""
-        goal_theta = self.steering_angle(goal_pose, current_pose)
-        return constant * self.angular_difference(goal_theta, current_pose[2])
-
-
-    def pose3d_to_2d(self, pose3):
-        quaternion = (
-            pose3.orientation.x,
-            pose3.orientation.y,
-            pose3.orientation.z,
-            pose3.orientation.w
-        )
-        
-        roll, pitch, yaw = tf_transformations.euler_from_quaternion(quaternion)
-        
-        pose2 = (
-            pose3.position.x,  # x position
-            pose3.position.y,  # y position
-            yaw                # theta orientation
-        )
-        
-        return pose2
     
     def find_shortest_path(self, path):
         """
@@ -635,7 +798,23 @@ class ControllerNode(Node):
     
         self.get_logger().info(msg)
 
-
+    def pose3d_to_2d(self, pose3):
+        quaternion = (
+            pose3.orientation.x,
+            pose3.orientation.y,
+            pose3.orientation.z,
+            pose3.orientation.w
+        )
+        
+        roll, pitch, yaw = tf_transformations.euler_from_quaternion(quaternion)
+        
+        pose2 = (
+            pose3.position.x,  # x position
+            pose3.position.y,  # y position
+            yaw                # theta orientation
+        )
+        
+        return pose2
 
 def main():
     # Initialize the ROS client library
