@@ -25,10 +25,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'controller_node = maze_solver.controller_node:main',
-            'cell_trav = maze_solver.cell_trav:main',
-            'camera_enabled = maze_solver.controller_node_camera:main',
-            'camera_enabled_v2 = maze_solver.cmr_v2:main'
+            'controller_proximity = maze_solver.controller_proximity:main',
+            'controller_camera = maze_solver.controller_camera:main',
         ],
     },
 )
