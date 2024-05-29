@@ -220,7 +220,7 @@ class ControllerNode(Node):
                     cmd_vel.angular.z = 0.0
 
                 # if self.aligned:
-                cmd_vel.linear.x = 0.03
+                cmd_vel.linear.x = 0.3
                 # self.get_logger().info("Moving to the centre of the next cell")
                 if self.prev_cell_contour is None:
                     # self.get_logger().info(f"Setting pcc: x: {square_center_x}, y: {square_center_y}")
@@ -332,7 +332,7 @@ class ControllerNode(Node):
 
                 case CallbackUsage.MOVE_A_LITTLE_FORWARD:
                     cmd_vel = Twist()
-                    cmd_vel.linear.x = 0.1
+                    cmd_vel.linear.x = 0.3
                     # self.get_logger().info("Moving a bit forward by itself")
                     if self.start_pose is None: 
                         self.start_pose = self.current_pose
@@ -405,8 +405,8 @@ class ControllerNode(Node):
         ca = cp[2]
         cmd_vel = Twist()
         if self.target_orientation is None:
-            # self.target_orientation = (ca + ta)%(2*np.pi)
-            self.target_orientation = ca + ta
+            self.target_orientation = (ca + ta)%(2*np.pi)
+            # self.target_orientation = ca + ta
             # if self.target_orientation > np.pi:
             #     self.target_orientation -= 2*np.pi
         # self.get_logger().info(f"The target {self.target_orientation}, ca = {ca}")
