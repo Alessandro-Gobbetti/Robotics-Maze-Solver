@@ -13,7 +13,7 @@ This project can be split into three main parts:
 This project is for the Robotics Course offered at Università della Svizzera Italiana (USI), Lugano.
 
 ## How to run
-Open one of the provided CoppeliaSim scenes provided in the `scenes` folder:
+Open one of the provided CoppeliaSim scenes provided in the `resource/scenes` folder:
 - `resource/scenes/scene-sensors_small.ttt` for the small maze and proximity sensors navigation
 - `resource/scenes/scene-sensors_big.ttt` for the big maze and proximity sensors navigation
 - `resource/scenes/scene-camera_small.ttt` for the small maze and camera navigation
