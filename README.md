@@ -7,10 +7,10 @@ Authors: Alessandro Gobbetti, Lovnesh Bhardwaj, Lin Xintan
 
 ## How to run
 Open one of the provided CoppeliaSim scenes provided in the `scenes` folder:
-- `scenes/scene-sensors_small.ttt` for the small maze and proximity sensors navigation
-- `scenes/scene-sensors_big.ttt` for the big maze and proximity sensors navigation
-- `scenes/scene-camera_small.ttt` for the small maze and camera navigation
-- `scenes/scene-camera_big.ttt` for the big maze and camera navigation
+- `resource/scenes/scene-sensors_small.ttt` for the small maze and proximity sensors navigation
+- `resource/scenes/scene-sensors_big.ttt` for the big maze and proximity sensors navigation
+- `resource/scenes/scene-camera_small.ttt` for the small maze and camera navigation
+- `resource/scenes/scene-camera_big.ttt` for the big maze and camera navigation
 
 To run the code, move the `Robotics-Maze-Solver` package in your ROS workspace and build it:
 ```bash
@@ -50,5 +50,7 @@ Then click on Plugins > Visualization > Image View and enter the following topic
 ```bash
 /camera/image_processed
 ```
-This will yield the processed image that the camera is seeing. Please note that a Lua script had to be added to the Camera Sensor to get the processed image. This can be found in the file CameraSensorChildScript.lua in the root directory of this project.
+This will yield the processed image that the camera is seeing. Please note that a Lua script had to be added to the Camera Sensor to get the processed image. This can be found in the file `CameraSensorChildScript.lua` in the `resource` directory .
 
+## Example Videos
+In the 'resource/videos' folder, you can find some example videos of the robot navigating the maze using the proximity sensors and the camera.
