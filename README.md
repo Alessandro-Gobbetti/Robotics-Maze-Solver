@@ -1,6 +1,6 @@
 # Robotics-Maze-Solver
 
-Authors: ...
+Authors: Alessandro Gobbetti, Lovnesh Bhardwaj, Lin Xintan
 
 
 
@@ -50,5 +50,5 @@ Then click on Plugins > Visualization > Image View and enter the following topic
 ```bash
 /camera/image_processed
 ```
-This will yield the processed image that the camera is seeing. Please note that to get the processed image, a Lua script had to be added to the Camera Sensor. This can be found in the file 
+This will yield the processed image that the camera is seeing. Please note that a Lua script had to be added to the Camera Sensor to get the processed image. This can be found in the file ChildScriptCameraSensor.lua in the root directory of this project.
 
