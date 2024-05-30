@@ -41,4 +41,14 @@ Also, with the additional parameter `maze:=example_big` or `maze:=example_small`
 ros2 launch maze_solver camera.launch.xml maze:=example_big
 ```
 
+## Processed Image Output
+To look at what the processed image that helps the robot in aligning to the center of the cell, open another terminal, and run:
+```bash
+rqt
+```
+Then click on Plugins > Visualization > Image View and enter the following topic:
+```bash
+/camera/image_processed
+```
+This will yield the processed image that the camera is seeing. Please note that to get the processed image, a Lua script had to be added to the Camera Sensor. This can be found in the file 
 
