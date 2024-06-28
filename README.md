@@ -61,3 +61,10 @@ This will yield the processed image that the camera is seeing. Please note that 
 
 ## Example Videos
 In the 'resource/videos' folder, you can find some example videos of the robot navigating the maze using the proximity sensors and the camera.
+
+
+https://github.com/Alessandro-Gobbetti/Robotics-Maze-Solver/assets/79453106/59fa8405-174d-466d-bb0c-60d8072b967c
+
+
+https://github.com/Alessandro-Gobbetti/Robotics-Maze-Solver/assets/79453106/f3d240c9-fdf2-4908-a6f2-05bd99111279
+
